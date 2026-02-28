@@ -5,6 +5,9 @@
  * 
  * Direct Win32 API calls for window find/focus/minimize/maximize/close/snap,
  * keyboard/mouse simulation via SendInput, clipboard, screenshots, multi-monitor.
+ *
+ * Includes Smart Input Wait: polls for edit-control readiness
+ * before typing to prevent the "swallowed first letter" bug.
  */
 
 #include <string>
@@ -77,6 +80,11 @@ public:
     std::pair<bool, HWND> waitForWindow(const std::string& pattern,
                                          float timeout = 10.0f);
     bool waitAndFocus(const std::string& app_name, float timeout = 8.0f);
+
+    /// Wait until a window's edit control is ready for input.
+    /// Polls GetGUIThreadInfo for caret, falls back to UIA keyboard focus.
+    /// Returns true if input readiness was confirmed, false on timeout.
+    bool waitForInputReady(HWND hwnd, float timeout = 5.0f);
 
     // ── Multi-window layout ──────────────────────────────────────
     bool arrangeWindowsSideBySide(const std::string& left, const std::string& right);

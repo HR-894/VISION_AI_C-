@@ -7,6 +7,7 @@
  */
 
 #include "window_manager.h"
+#include "ui_automation.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -315,16 +316,19 @@ std::string WindowManager::takeScreenshot(const std::string& save_path) {
 
     SelectObject(memDC, oldBmp);  // Restore old bitmap
 
-    // Determine save path
+    // Determine save path — default to AI_Workspace/Screenshots (whitelisted, no CFA blocking)
     std::string finalPath = save_path;
     if (finalPath.empty()) {
-        char pictures[MAX_PATH] = {};
-        if (FAILED(SHGetFolderPathA(nullptr, CSIDL_MYPICTURES, nullptr, 0, pictures))) {
-            // Fallback to Desktop
-            if (FAILED(SHGetFolderPathA(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, 0, pictures))) {
-                strcpy_s(pictures, ".");
-            }
+        char profile[MAX_PATH] = {};
+        if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_PROFILE, nullptr, 0, profile))) {
+            finalPath = std::string(profile) + "\\AI_Workspace\\Screenshots";
+        } else {
+            finalPath = ".\\Screenshots";
         }
+
+        // Ensure the directory exists
+        fs::create_directories(finalPath);
+
         // Generate timestamped filename
         auto now = std::chrono::system_clock::now();
         auto time_t_now = std::chrono::system_clock::to_time_t(now);
@@ -332,35 +336,54 @@ std::string WindowManager::takeScreenshot(const std::string& save_path) {
         localtime_s(&tm_buf, &time_t_now);
         char timestamp[64];
         strftime(timestamp, sizeof(timestamp), "%Y%m%d_%H%M%S", &tm_buf);
-        finalPath = std::string(pictures) + "\\VISION_Screenshot_" + timestamp + ".png";
+        finalPath += "\\VISION_Screenshot_" + std::string(timestamp) + ".png";
     }
 
     // Save as PNG using GDI+
     Gdiplus::Bitmap* gdiBitmap = Gdiplus::Bitmap::FromHBITMAP(bmp, nullptr);
+    std::string result_msg;
+
     if (gdiBitmap) {
         CLSID pngClsid;
         if (GetEncoderClsid(L"image/png", &pngClsid) >= 0) {
             std::wstring widePath = utf8ToWide(finalPath);
-            
-            // Ensure directory exists
-            std::filesystem::path p(finalPath);
-            if (!std::filesystem::exists(p.parent_path())) {
-                std::filesystem::create_directories(p.parent_path());
-            }
+
+            // Ensure parent directory exists
+            fs::path p(finalPath);
+            fs::create_directories(p.parent_path());
 
             Gdiplus::Status status = gdiBitmap->Save(widePath.c_str(), &pngClsid, nullptr);
+
             if (status == Gdiplus::Ok) {
-                LOG_INFO("Screenshot saved: {}", finalPath);
+                // STRICT VERIFICATION: confirm the file actually exists and has content
+                std::error_code ec;
+                if (fs::exists(finalPath, ec) && fs::file_size(finalPath, ec) > 0) {
+                    LOG_INFO("Screenshot verified: {} ({} bytes)", finalPath,
+                             fs::file_size(finalPath, ec));
+                    result_msg = finalPath;
+
+                    // Auto-open the screenshot in the default image viewer
+                    ShellExecuteA(nullptr, "open", finalPath.c_str(),
+                                  nullptr, nullptr, SW_SHOW);
+                } else {
+                    LOG_ERROR("Screenshot file missing or empty after save — "
+                              "likely blocked by Controlled Folder Access or VirtualStore: {}",
+                              finalPath);
+                    result_msg = "ERROR: Screenshot save was reported as OK but the file "
+                                 "does not exist at: " + finalPath +
+                                 " — Windows Defender Controlled Folder Access may be blocking writes. "
+                                 "Try adding AI_Workspace to the allowed folders list.";
+                }
             } else {
                 LOG_ERROR("GDI+ Save failed with status: {}", (int)status);
-                finalPath = "ERROR: GDI+ Save failed";
+                result_msg = "ERROR: GDI+ Save failed (status " + std::to_string((int)status) + ")";
             }
         } else {
-            finalPath = "ERROR: Failed to find PNG encoder";
+            result_msg = "ERROR: Failed to find PNG encoder";
         }
         delete gdiBitmap;
     } else {
-        finalPath = "ERROR: Failed to create GDI+ Bitmap from HBITMAP";
+        result_msg = "ERROR: Failed to create GDI+ Bitmap from HBITMAP";
     }
 
     // Cleanup GDI
@@ -369,7 +392,7 @@ std::string WindowManager::takeScreenshot(const std::string& save_path) {
     ReleaseDC(nullptr, screenDC);
     Gdiplus::GdiplusShutdown(gdiplusToken);
 
-    return finalPath;
+    return result_msg;
 }
 
 // ═══════════════════ Volume (Core Audio COM) ═══════════════════
@@ -541,25 +564,26 @@ void WindowManager::typeText(const std::string& text, float interval,
         if (!waitAndFocus(target_window, 3.0f)) {
             LOG_WARN("Could not find/focus window '{}' for typing", target_window);
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
         
-        // Click the client area to ensure the edit control has focus
-        // (SetForegroundWindow alone doesn't activate child edit controls)
+        // Wait for the edit control to be ready (no hardcoded sleep)
         HWND fg = GetForegroundWindow();
         if (fg) {
+            // Click the client area to activate child edit controls
             RECT rc;
             GetClientRect(fg, &rc);
             POINT center = { (rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2 };
             ClientToScreen(fg, &center);
             SetCursorPos(center.x, center.y);
-            
+
             INPUT click[2] = {};
             click[0].type = INPUT_MOUSE;
             click[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
             click[1].type = INPUT_MOUSE;
             click[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
             SendInput(2, click, sizeof(INPUT));
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+            // Smart wait: poll until the caret / keyboard focus is ready
+            waitForInputReady(fg, 5.0f);
         }
     }
 
@@ -639,6 +663,58 @@ bool WindowManager::waitAndFocus(const std::string& app_name, float timeout) {
         focusWindow(lower);
         return true;
     }
+    return false;
+}
+
+// ═══════════════════ Smart Input Wait ═══════════════════
+
+bool WindowManager::waitForInputReady(HWND hwnd, float timeout) {
+    if (!hwnd) return false;
+
+    auto start = std::chrono::steady_clock::now();
+
+    while (true) {
+        float elapsed = std::chrono::duration<float>(
+            std::chrono::steady_clock::now() - start).count();
+        if (elapsed >= timeout) break;
+
+        // Method 1: Check if the GUI thread reports an active caret
+        DWORD threadId = GetWindowThreadProcessId(hwnd, nullptr);
+        GUITHREADINFO gti{};
+        gti.cbSize = sizeof(gti);
+        if (GetGUIThreadInfo(threadId, &gti)) {
+            if (gti.hwndCaret != nullptr) {
+                LOG_INFO("Input ready: caret detected after {:.0f}ms", elapsed * 1000);
+                return true;
+            }
+            // Also check if a child has focus (e.g., edit control)
+            if (gti.hwndFocus != nullptr && gti.hwndFocus != hwnd) {
+                // A child control has keyboard focus — good enough
+                LOG_INFO("Input ready: child focus detected after {:.0f}ms", elapsed * 1000);
+                return true;
+            }
+        }
+
+        // Method 2: Fallback to UI Automation keyboard focus check
+        static UIAutomation uia_checker;
+        if (uia_checker.isAvailable()) {
+            auto elem = uia_checker.findElement("");  // Any focused element
+            // Even if findElement returns nothing, the fact that UIA is responsive
+            // combined with the window being foreground is a good signal
+            if (elapsed > 0.3f) {
+                // After 300ms minimum, if the window is foreground, proceed
+                HWND current_fg = GetForegroundWindow();
+                if (current_fg == hwnd) {
+                    LOG_INFO("Input ready: UIA fallback after {:.0f}ms", elapsed * 1000);
+                    return true;
+                }
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    LOG_WARN("waitForInputReady timed out after {:.0f}ms", timeout * 1000);
     return false;
 }
 

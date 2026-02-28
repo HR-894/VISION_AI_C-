@@ -248,21 +248,99 @@ std::optional<ScreenPoint> ActionExecutor::findElementOCR(const std::string& tex
 
 std::pair<bool, std::string> ActionExecutor::findAndClick(const std::string& element,
                                                            int retry) {
-    for (int i = 0; i < retry; i++) {
-        auto pt = findElementOCR(element);
-        if (pt) {
-            SetCursorPos(pt->x, pt->y);
-            // C7 fix: separate down and up events for reliable clicks
+    // ── Strategy 1: Try UI Automation first (instant, precise) ────────
+    auto& uia = getUIAuto();
+    if (uia.isAvailable()) {
+        auto uia_elem = uia.findElement(element);
+        if (uia_elem) {
+            // Click the center of the UIA element's bounding rect
+            int cx = (uia_elem->bounds.left + uia_elem->bounds.right) / 2;
+            int cy = (uia_elem->bounds.top + uia_elem->bounds.bottom) / 2;
+            SetCursorPos(cx, cy);
             INPUT inputs[2] = {};
             inputs[0].type = INPUT_MOUSE;
             inputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
             inputs[1].type = INPUT_MOUSE;
             inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
             SendInput(2, inputs, sizeof(INPUT));
-            return {true, "Clicked: " + element};
+            LOG_INFO("Clicked via UIA: {} at ({}, {})", element, cx, cy);
+            return {true, "Clicked (UIA): " + element};
         }
+        LOG_INFO("UIA did not find '{}', falling back to OCR", element);
+    }
+
+    // ── Strategy 2: OCR fallback with optimized TessBaseAPI reuse ──────
+#ifdef VISION_HAS_OCR
+    // Initialize Tesseract ONCE outside the retry loop
+    auto* api = new tesseract::TessBaseAPI();
+    if (api->Init(nullptr, "eng") != 0) {
+        LOG_ERROR("Tesseract init failed in findAndClick");
+        delete api;
+        return {false, "OCR init failed, element not found: " + element};
+    }
+
+    std::string lower_element = element;
+    std::transform(lower_element.begin(), lower_element.end(),
+                   lower_element.begin(), ::tolower);
+
+    for (int i = 0; i < retry; i++) {
+        // Capture a fresh screenshot each retry (window may have changed)
+        auto screenshot = captureScreen();
+        cv::Mat img = preprocessForOCR(screenshot);
+
+        // Update the image data without reinitializing the engine
+        api->SetImage(img.data, img.cols, img.rows,
+                       img.channels(), (int)img.step);
+
+        auto* ri = api->GetIterator();
+        if (ri) {
+            float scale = 0.5f;  // preprocessForOCR scales 2x
+            do {
+                const char* word = ri->GetUTF8Text(tesseract::RIL_WORD);
+                if (word) {
+                    std::string lower_word(word);
+                    std::transform(lower_word.begin(), lower_word.end(),
+                                   lower_word.begin(), ::tolower);
+                    int conf = ri->Confidence(tesseract::RIL_WORD);
+
+                    if (lower_word.find(lower_element) != std::string::npos &&
+                        conf >= 50) {
+                        int x1, y1, x2, y2;
+                        ri->BoundingBox(tesseract::RIL_WORD, &x1, &y1, &x2, &y2);
+                        int cx = (int)((x1 + x2) * scale / 2);
+                        int cy = (int)((y1 + y2) * scale / 2);
+
+                        delete[] word;
+                        delete ri;
+                        api->End();
+                        delete api;
+
+                        SetCursorPos(cx, cy);
+                        INPUT inputs[2] = {};
+                        inputs[0].type = INPUT_MOUSE;
+                        inputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+                        inputs[1].type = INPUT_MOUSE;
+                        inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+                        SendInput(2, inputs, sizeof(INPUT));
+                        LOG_INFO("Clicked via OCR: {} at ({}, {})", element, cx, cy);
+                        return {true, "Clicked (OCR): " + element};
+                    }
+                    delete[] word;
+                }
+            } while (ri->Next(tesseract::RIL_WORD));
+            delete ri;
+        }
+
+        api->Clear();  // Reset image data for next iteration (keeps engine alive)
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
+
+    api->End();
+    delete api;
+#else
+    (void)retry;
+#endif
+
     return {false, "Element not found: " + element};
 }
 
@@ -312,6 +390,17 @@ std::pair<bool, std::string> ActionExecutor::actionSearchInBrowser(const json& p
 std::pair<bool, std::string> ActionExecutor::actionTypeText(const json& params) {
     std::string text = params.value("text", "");
     std::string target = params.value("target", "");
+
+    // If no target specified, use the last active app from context manager
+    // This prevents accidentally typing into Vision AI's own command box
+    if (target.empty()) {
+        auto ctx = app_.contextMgr().getActiveApp();
+        if (!ctx.name.empty()) {
+            target = ctx.name;
+            LOG_INFO("actionTypeText: no target specified, using context app: {}", target);
+        }
+    }
+
     app_.windowMgr().typeText(text, 0.02f, target);
     return {true, "Typed: " + text};
 }

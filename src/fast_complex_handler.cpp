@@ -35,7 +35,6 @@ void FastComplexHandler::initPatterns() {
             std::string query = m[2].str();
             
             auto result = app_.instantExecute("open " + app);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
             
             // If it's a browser, type in address bar
             if (app_.sysCmds().isBrowser(app)) {
@@ -60,7 +59,6 @@ void FastComplexHandler::initPatterns() {
             std::string text = m[2].str();
             
             app_.instantExecute("open " + app);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
             app_.windowMgr().waitAndFocus(app, 3.0f);
             app_.windowMgr().typeText(text);
             return {true, "Opened " + app + " and typed: " + text};
@@ -74,7 +72,6 @@ void FastComplexHandler::initPatterns() {
             std::string text = m[2].str();
             
             app_.instantExecute("open " + app);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
             app_.windowMgr().waitAndFocus(app, 3.0f);
             app_.windowMgr().setClipboard(text);
             app_.windowMgr().pasteClipboard();
@@ -93,7 +90,6 @@ void FastComplexHandler::initPatterns() {
             
             // Open the app and type the list
             app_.instantExecute("open " + app);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
             app_.windowMgr().waitAndFocus(app, 3.0f);
             app_.windowMgr().typeText(list_result);
             return {true, "Listed " + what + " in " + app};
