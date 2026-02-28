@@ -301,14 +301,22 @@ void VisionAI::setupTrayIcon() {
 
 
 void VisionAI::setupHotkey() {
-    // Ctrl+Alt+Space — reliable global hotkey for voice toggle
-    // (Ctrl+Win combos conflict with Windows shortcuts)
+    // Ctrl+Alt+Space — voice toggle
     hotkey_registered_ = RegisterHotKey((HWND)winId(), hotkey_id_,
                                          MOD_CONTROL | MOD_ALT, VK_SPACE);
     if (hotkey_registered_) {
         LOG_INFO("Global hotkey registered: Ctrl+Alt+Space");
     } else {
         LOG_ERROR("Failed to register hotkey Ctrl+Alt+Space (err={})", GetLastError());
+    }
+
+    // Ctrl+Esc — Emergency Stop (kill switch for runaway generation)
+    kill_switch_registered_ = RegisterHotKey((HWND)winId(), kill_switch_id_,
+                                              MOD_CONTROL, VK_ESCAPE);
+    if (kill_switch_registered_) {
+        LOG_INFO("Kill switch registered: Ctrl+Esc");
+    } else {
+        LOG_WARN("Failed to register kill switch Ctrl+Esc (err={})", GetLastError());
     }
 }
 
@@ -330,13 +338,20 @@ void VisionAI::loadModels() {
     
 #ifdef VISION_HAS_LLM
     llm_controller_ = std::make_unique<LLMController>();
-    
+
+    // Apply dynamic context size and thread count from device profiler
+    auto rec2 = profiler_.getRecommendedConfig();
+    int ctx_size = rec2.value("context_size", 2048);
+    int thread_count = rec2.value("thread_count", 2);
+    llm_controller_->setContextSize(ctx_size);
+    llm_controller_->setThreadCount(thread_count);
+    LOG_INFO("LLM config: context={}, threads={}", ctx_size, thread_count);
+
     // Auto-set GPU layers: offload everything to GPU when Vulkan is available
 #if defined(VISION_GPU_VULKAN) || defined(VISION_GPU_CUDA)
-    llm_controller_->setGPULayers(99);  // All layers on GPU
+    llm_controller_->setGPULayers(99);
     LOG_INFO("GPU acceleration: offloading all layers to GPU");
 #else
-    auto rec2 = profiler_.getRecommendedConfig();
     llm_controller_->setGPULayers(rec2.value("gpu_layers", 0));
 #endif
     
@@ -350,8 +365,17 @@ void VisionAI::loadModels() {
         *llm_controller_, *action_executor_, window_mgr_, *this);
     router_.setReActAgent(react_agent_.get());
     LOG_INFO("AI ReAct agent initialized");
+
+    // ── Idle Timer: check every 60s, auto-unload LLM after 5min idle ──
+    idle_timer_ = new QTimer(this);
+    connect(idle_timer_, &QTimer::timeout, this, [this]() {
+#ifdef VISION_HAS_LLM
+        if (llm_controller_) llm_controller_->checkIdleUnload();
 #endif
-    
+    });
+    idle_timer_->start(60000);  // Check every 60 seconds
+#endif
+
     emit statusReady("Ready | " + QString::fromStdString(profiler_.getStatusString()), "");
 }
 
@@ -807,13 +831,26 @@ void VisionAI::closeEvent(QCloseEvent* event) {
 
 bool VisionAI::nativeEvent(const QByteArray& eventType, void* message, qintptr* result) {
     MSG* msg = static_cast<MSG*>(message);
-    if (msg->message == WM_HOTKEY && msg->wParam == (WPARAM)hotkey_id_) {
+    if (msg->message == WM_HOTKEY) {
+        if (msg->wParam == (WPARAM)hotkey_id_) {
 #ifdef VISION_HAS_WHISPER
-        if (recording_) stopAndProcess();
-        else startRecording();
+            if (recording_) stopAndProcess();
+            else startRecording();
 #endif
-        *result = 0;
-        return true;
+            *result = 0;
+            return true;
+        }
+        if (msg->wParam == (WPARAM)kill_switch_id_) {
+            // Emergency Stop: cancel LLM generation + stop ReAct agent
+            LOG_WARN("EMERGENCY STOP triggered (Ctrl+Esc)");
+#ifdef VISION_HAS_LLM
+            if (llm_controller_) llm_controller_->cancelGeneration();
+            if (react_agent_) react_agent_->stop();
+#endif
+            addMessage("System", "⛔ Emergency Stop — generation cancelled");
+            *result = 0;
+            return true;
+        }
     }
     return QMainWindow::nativeEvent(eventType, message, result);
 }

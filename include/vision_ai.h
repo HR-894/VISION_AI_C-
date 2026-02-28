@@ -166,7 +166,10 @@ private:
 
     // ── Hotkey ───────────────────────────────────────────────────
     int hotkey_id_ = 1;
+    int kill_switch_id_ = 2;  // Ctrl+Esc emergency stop
     bool hotkey_registered_ = false;
+    bool kill_switch_registered_ = false;
+    QTimer* idle_timer_ = nullptr;  // LLM idle auto-unload timer
     std::thread model_load_thread_;  // Joined in destructor (C3 fix)
     std::thread cmd_thread_;          // Command processing thread (no longer detached)
 

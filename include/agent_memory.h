@@ -3,9 +3,9 @@
  * @file agent_memory.h
  * @brief Persistent JSON memory for the agent
  * 
- * Records task history, learns app aliases, tracks file locations,
- * stores corrections, and provides similarity-based task lookup.
- * Auto-saves to disk on destruction.
+ * Records task history (with optional vector embeddings), learns app aliases,
+ * tracks file locations, stores corrections, and provides cosine-similarity
+ * based task lookup for vector memory. Auto-saves to disk on destruction.
  */
 
 #include <string>
@@ -13,6 +13,7 @@
 #include <mutex>
 #include <filesystem>
 #include <chrono>
+#include <functional>
 #include <nlohmann/json.hpp>
 
 namespace vision {
@@ -27,8 +28,10 @@ public:
     AgentMemory& operator=(const AgentMemory&) = delete;
 
     /// Record a completed task with command, result, success flag, and action list
+    /// Optionally includes vector embedding for similarity search
     void recordTask(const std::string& command, const std::string& result,
-                    bool success, const std::vector<std::string>& actions);
+                    bool success, const std::vector<std::string>& actions,
+                    const std::vector<float>& embedding = {});
 
     /// Learn an app alias (user_name → actual_name)
     void learnAlias(const std::string& alias, const std::string& real_name);
@@ -47,9 +50,11 @@ public:
     /// Recall where files of a type are usually found
     std::string recallFileLocation(const std::string& name) const;
 
-    /// Find similar past tasks (word-overlap scoring)
+    /// Find similar past tasks using cosine similarity on embeddings
+    /// Falls back to word-overlap if no embeddings available
     std::vector<nlohmann::json> findSimilarTasks(const std::string& command,
-                                                  int max_results = 3) const;
+                                                  int max_results = 3,
+                                                  const std::vector<float>& query_embedding = {}) const;
 
     /// Get memory statistics 
     nlohmann::json getStats() const;

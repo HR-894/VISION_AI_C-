@@ -11,6 +11,7 @@
 #include <fstream>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <windows.h>
 #include <wincrypt.h>
 
@@ -167,7 +168,8 @@ void AgentMemory::save() {
 }
 
 void AgentMemory::recordTask(const std::string& command, const std::string& result,
-                              bool success, const std::vector<std::string>& actions) {
+                              bool success, const std::vector<std::string>& actions,
+                              const std::vector<float>& embedding) {
     std::lock_guard lock(mutex_);
     
     auto now = std::chrono::system_clock::now();
@@ -180,6 +182,11 @@ void AgentMemory::recordTask(const std::string& command, const std::string& resu
         {"actions", actions},
         {"timestamp", ts}
     };
+
+    // Store vector embedding if provided
+    if (!embedding.empty()) {
+        entry["embedding"] = embedding;
+    }
     
     memory_["task_history"].push_back(entry);
     
@@ -249,43 +256,79 @@ std::string AgentMemory::recallFileLocation(const std::string& name) const {
     return "";
 }
 
-std::vector<json> AgentMemory::findSimilarTasks(const std::string& command, int max_results) const {
+std::vector<json> AgentMemory::findSimilarTasks(const std::string& command,
+                                                  int max_results,
+                                                  const std::vector<float>& query_embedding) const {
     std::lock_guard lock(mutex_);
     std::vector<json> results;
-    
+    if (!memory_.contains("task_history")) return results;
+
+    // ── Strategy 1: Cosine similarity with vector embeddings ──
+    if (!query_embedding.empty()) {
+        std::vector<std::pair<float, json>> scored;
+
+        for (const auto& task : memory_["task_history"]) {
+            if (!task.contains("embedding")) continue;
+            auto saved_emb = task["embedding"].get<std::vector<float>>();
+            if (saved_emb.size() != query_embedding.size()) continue;
+
+            // Cosine similarity using <cmath>
+            float dot = 0.0f, norm_a = 0.0f, norm_b = 0.0f;
+            for (size_t i = 0; i < query_embedding.size(); i++) {
+                dot += query_embedding[i] * saved_emb[i];
+                norm_a += query_embedding[i] * query_embedding[i];
+                norm_b += saved_emb[i] * saved_emb[i];
+            }
+            float denom = std::sqrt(norm_a) * std::sqrt(norm_b);
+            float similarity = (denom > 0.0f) ? (dot / denom) : 0.0f;
+
+            if (similarity > 0.85f) {
+                scored.emplace_back(similarity, task);
+            }
+        }
+
+        std::sort(scored.begin(), scored.end(),
+                  [](auto& a, auto& b) { return a.first > b.first; });
+
+        for (int i = 0; i < std::min(max_results, (int)scored.size()); i++) {
+            results.push_back(scored[i].second);
+        }
+
+        if (!results.empty()) return results;
+        // Fall through to word-overlap if no embedding matches
+    }
+
+    // ── Strategy 2: Word-overlap fallback ──
     std::string lower_cmd = command;
     std::transform(lower_cmd.begin(), lower_cmd.end(), lower_cmd.begin(), ::tolower);
-    
-    // Split into words
+
     std::vector<std::string> cmd_words;
     std::istringstream ss(lower_cmd);
     std::string word;
     while (ss >> word) cmd_words.push_back(word);
-    
-    if (!memory_.contains("task_history")) return results;
-    
+
     std::vector<std::pair<int, json>> scored;
-    
+
     for (const auto& task : memory_["task_history"]) {
         std::string task_cmd = task.value("command", "");
         std::string lower_task = task_cmd;
         std::transform(lower_task.begin(), lower_task.end(), lower_task.begin(), ::tolower);
-        
+
         int score = 0;
         for (const auto& w : cmd_words) {
             if (lower_task.find(w) != std::string::npos) score++;
         }
-        
+
         if (score > 0) scored.emplace_back(score, task);
     }
-    
+
     std::sort(scored.begin(), scored.end(),
               [](auto& a, auto& b) { return a.first > b.first; });
-    
+
     for (int i = 0; i < std::min(max_results, (int)scored.size()); i++) {
         results.push_back(scored[i].second);
     }
-    
+
     return results;
 }
 

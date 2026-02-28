@@ -248,7 +248,26 @@ DeviceProfiler::Tier DeviceProfiler::determineTier() {
 
 nlohmann::json DeviceProfiler::getRecommendedConfig() const {
     nlohmann::json cfg;
-    
+
+    int ram_mb = getRAMTotalMB();
+    int gpu_mb = getGPUMemoryMB();
+    int total_mb = ram_mb + gpu_mb;
+
+    // ── Dynamic context size based on total available memory ──
+    int context_size;
+    if (total_mb <= 8192) {        // ≤ 8 GB total
+        context_size = 2048;
+    } else if (total_mb <= 16384) { // ≤ 16 GB total
+        context_size = 4096;
+    } else {                        // > 16 GB (High tier, e.g. RTX 4050)
+        context_size = 8192;
+    }
+    cfg["context_size"] = context_size;
+
+    // ── Thread count: half of logical cores to prevent OS freezing ──
+    unsigned int hw_threads = std::thread::hardware_concurrency();
+    cfg["thread_count"] = std::max(1u, hw_threads / 2);
+
     switch (tier_) {
         case Tier::High:
             cfg["whisper_model"] = "small";
@@ -266,7 +285,7 @@ nlohmann::json DeviceProfiler::getRecommendedConfig() const {
             cfg["gpu_layers"] = 0;
             break;
     }
-    
+
     cfg["tier"] = getTierString();
     return cfg;
 }

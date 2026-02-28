@@ -151,7 +151,15 @@ json ReActAgent::observe() {
 }
 
 std::optional<json> ReActAgent::think(const std::string& cmd, const json& ctx) {
-    return llm_.reactStep(cmd, ctx, action_history_);
+    // Build a reinforced JSON-only task prompt with strict system persona
+    std::string strict_cmd =
+        "[SYSTEM] You are a native Windows local AI core. "
+        "You have NO internet access. You do not chat. "
+        "You strictly output JSON commands to control the OS. "
+        "Do not provide explanations.\n\n"
+        "[USER TASK] " + cmd;
+
+    return llm_.reactStep(strict_cmd, ctx, action_history_);
 }
 
 std::pair<bool, std::string> ReActAgent::act(const json& plan) {
