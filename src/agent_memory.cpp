@@ -8,6 +8,7 @@
  */
 
 #include "agent_memory.h"
+#include "llm_controller.h"
 #include <fstream>
 #include <algorithm>
 #include <chrono>
@@ -183,9 +184,13 @@ void AgentMemory::recordTask(const std::string& command, const std::string& resu
         {"timestamp", ts}
     };
 
-    // Store vector embedding if provided
-    if (!embedding.empty()) {
-        entry["embedding"] = embedding;
+    // Store vector embedding — auto-generate if LLM is available
+    std::vector<float> emb = embedding;
+    if (emb.empty() && llm_) {
+        emb = llm_->getEmbeddings(command);
+    }
+    if (!emb.empty()) {
+        entry["embedding"] = emb;
     }
     
     memory_["task_history"].push_back(entry);
@@ -263,20 +268,26 @@ std::vector<json> AgentMemory::findSimilarTasks(const std::string& command,
     std::vector<json> results;
     if (!memory_.contains("task_history")) return results;
 
+    // Auto-generate embedding for query if not provided and LLM is available
+    std::vector<float> effective_embedding = query_embedding;
+    if (effective_embedding.empty() && llm_) {
+        effective_embedding = llm_->getEmbeddings(command);
+    }
+
     // ── Strategy 1: Cosine similarity with vector embeddings ──
-    if (!query_embedding.empty()) {
+    if (!effective_embedding.empty()) {
         std::vector<std::pair<float, json>> scored;
 
         for (const auto& task : memory_["task_history"]) {
             if (!task.contains("embedding")) continue;
             auto saved_emb = task["embedding"].get<std::vector<float>>();
-            if (saved_emb.size() != query_embedding.size()) continue;
+            if (saved_emb.size() != effective_embedding.size()) continue;
 
             // Cosine similarity using <cmath>
             float dot = 0.0f, norm_a = 0.0f, norm_b = 0.0f;
-            for (size_t i = 0; i < query_embedding.size(); i++) {
-                dot += query_embedding[i] * saved_emb[i];
-                norm_a += query_embedding[i] * query_embedding[i];
+            for (size_t i = 0; i < effective_embedding.size(); i++) {
+                dot += effective_embedding[i] * saved_emb[i];
+                norm_a += effective_embedding[i] * effective_embedding[i];
                 norm_b += saved_emb[i] * saved_emb[i];
             }
             float denom = std::sqrt(norm_a) * std::sqrt(norm_b);

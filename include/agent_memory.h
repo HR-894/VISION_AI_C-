@@ -18,6 +18,9 @@
 
 namespace vision {
 
+// Forward declaration — AgentMemory optionally uses LLMController for embeddings
+class LLMController;
+
 class AgentMemory {
 public:
     explicit AgentMemory(const std::string& memory_path = "");
@@ -26,6 +29,9 @@ public:
     // Non-copyable
     AgentMemory(const AgentMemory&) = delete;
     AgentMemory& operator=(const AgentMemory&) = delete;
+
+    /// Set LLM controller reference for embedding generation
+    void setLLM(LLMController* llm) { llm_ = llm; }
 
     /// Record a completed task with command, result, success flag, and action list
     /// Optionally includes vector embedding for similarity search
@@ -65,6 +71,7 @@ private:
     mutable std::mutex mutex_;
     bool dirty_ = false;
     std::chrono::steady_clock::time_point last_save_{};
+    LLMController* llm_ = nullptr;  // Optional: for embedding generation
 
     void load();
     void save();

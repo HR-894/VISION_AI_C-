@@ -358,6 +358,9 @@ void VisionAI::loadModels() {
     if (llm_controller_->loadModel()) {
         LOG_INFO("LLM loaded: {}", llm_controller_->getModelInfo());
     }
+
+    // Wire LLM into AgentMemory for embedding generation
+    agent_memory_.setLLM(llm_controller_.get());
     
     // Create ActionExecutor and ReActAgent under LLM guard (not OCR)
     action_executor_ = std::make_unique<ActionExecutor>(*this);
@@ -820,6 +823,11 @@ void VisionAI::updateSystemStats() {
         cpu_label_->setText(QString("CPU: %1%").arg(cpu_pct));
     }
     last_idle = i; last_kernel = k; last_user = u;
+
+    // Check LLM idle timeout — auto-unload after 5min of inactivity
+#ifdef VISION_HAS_LLM
+    if (llm_controller_) llm_controller_->checkIdleUnload();
+#endif
 }
 
 // ═══════════════════ Events ═══════════════════

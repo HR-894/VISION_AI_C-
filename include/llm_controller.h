@@ -14,6 +14,7 @@
 #include <optional>
 #include <chrono>
 #include <mutex>
+#include <thread>
 #include <random>
 #include <atomic>
 #include <nlohmann/json.hpp>
@@ -94,7 +95,7 @@ private:
     bool loaded_ = false;
     int gpu_layers_ = 0;
     int context_size_ = 2048;
-    int thread_count_ = 2;
+    int thread_count_ = std::max(1, (int)std::thread::hardware_concurrency() / 2);
     float temperature_ = 0.1f;
     float top_p_ = 0.9f;
     int max_tokens_ = 512;
