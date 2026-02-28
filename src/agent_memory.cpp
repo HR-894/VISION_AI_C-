@@ -1,12 +1,20 @@
 /**
  * @file agent_memory.cpp
- * @brief Persistent JSON-based agent memory
+ * @brief Persistent DPAPI-encrypted agent memory
+ *
+ * All data is encrypted at rest using Windows DPAPI (CryptProtectData).
+ * Only the logged-in Windows user account can decrypt the data.
+ * Handles transparent migration from old plaintext JSON files.
  */
 
 #include "agent_memory.h"
 #include <fstream>
 #include <algorithm>
 #include <chrono>
+#include <windows.h>
+#include <wincrypt.h>
+
+#pragma comment(lib, "crypt32.lib")
 
 #ifdef VISION_HAS_SPDLOG
 #include <spdlog/spdlog.h>
@@ -21,6 +29,56 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 namespace vision {
+
+// ═══════════════════ DPAPI Helpers ═══════════════════
+
+static std::vector<BYTE> dpapi_encrypt(const std::string& plaintext) {
+    DATA_BLOB input;
+    input.pbData = const_cast<BYTE*>(reinterpret_cast<const BYTE*>(plaintext.data()));
+    input.cbData = static_cast<DWORD>(plaintext.size());
+
+    DATA_BLOB output{};
+    if (CryptProtectData(&input, L"VisionAI_Memory", nullptr, nullptr, nullptr,
+                          CRYPTPROTECT_UI_FORBIDDEN, &output)) {
+        std::vector<BYTE> result(output.pbData, output.pbData + output.cbData);
+        LocalFree(output.pbData);
+        return result;
+    }
+    return {};
+}
+
+static std::string dpapi_decrypt(const std::vector<BYTE>& encrypted) {
+    DATA_BLOB input;
+    input.pbData = const_cast<BYTE*>(encrypted.data());
+    input.cbData = static_cast<DWORD>(encrypted.size());
+
+    DATA_BLOB output{};
+    if (CryptUnprotectData(&input, nullptr, nullptr, nullptr, nullptr,
+                            CRYPTPROTECT_UI_FORBIDDEN, &output)) {
+        std::string result(reinterpret_cast<char*>(output.pbData), output.cbData);
+        LocalFree(output.pbData);
+        return result;
+    }
+    return {};
+}
+
+/// Check if file content looks like plaintext JSON (for migration)
+static bool is_plaintext_json(const std::vector<BYTE>& data) {
+    if (data.empty()) return false;
+    // Skip BOM if present
+    size_t start = 0;
+    if (data.size() >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) {
+        start = 3;
+    }
+    // Skip whitespace
+    while (start < data.size() && (data[start] == ' ' || data[start] == '\t' ||
+                                     data[start] == '\n' || data[start] == '\r')) {
+        start++;
+    }
+    return start < data.size() && data[start] == '{';
+}
+
+// ═══════════════════ AgentMemory Implementation ═══════════════════
 
 AgentMemory::AgentMemory(const std::string& memory_path)
     : file_path_(memory_path) {
@@ -48,9 +106,36 @@ void AgentMemory::load() {
         return;
     }
     try {
-        std::ifstream f(file_path_);
-        f >> memory_;
-        LOG_INFO("Agent memory loaded from {}", file_path_);
+        // Read raw bytes
+        std::ifstream f(file_path_, std::ios::binary);
+        std::vector<BYTE> raw((std::istreambuf_iterator<char>(f)),
+                               std::istreambuf_iterator<char>());
+        f.close();
+
+        if (raw.empty()) {
+            memory_ = json::object();
+            return;
+        }
+
+        // Migration: detect plaintext JSON and re-encrypt on next save
+        if (is_plaintext_json(raw)) {
+            LOG_INFO("Migrating plaintext agent_memory to DPAPI encryption");
+            std::string text(raw.begin(), raw.end());
+            memory_ = json::parse(text);
+            dirty_ = true;  // Will re-save encrypted
+            return;
+        }
+
+        // Decrypt DPAPI blob
+        std::string decrypted = dpapi_decrypt(raw);
+        if (decrypted.empty()) {
+            LOG_ERROR("DPAPI decryption failed for agent_memory — starting fresh");
+            memory_ = json::object();
+            return;
+        }
+
+        memory_ = json::parse(decrypted);
+        LOG_INFO("Agent memory loaded (encrypted) from {}", file_path_);
     } catch (const std::exception& e) {
         LOG_ERROR("Failed to load memory: {}", e.what());
         memory_ = json::object();
@@ -61,8 +146,20 @@ void AgentMemory::save() {
     std::lock_guard lock(mutex_);
     try {
         fs::create_directories(fs::path(file_path_).parent_path());
-        std::ofstream f(file_path_);
-        f << memory_.dump(2) << std::flush;
+
+        std::string plaintext = memory_.dump(2);
+        auto encrypted = dpapi_encrypt(plaintext);
+
+        if (encrypted.empty()) {
+            LOG_ERROR("DPAPI encryption failed — falling back to plaintext");
+            std::ofstream f(file_path_);
+            f << plaintext << std::flush;
+            return;
+        }
+
+        std::ofstream f(file_path_, std::ios::binary);
+        f.write(reinterpret_cast<char*>(encrypted.data()),
+                static_cast<std::streamsize>(encrypted.size()));
         if (!f.good()) { LOG_ERROR("Memory file write I/O error"); }
     } catch (const std::exception& e) {
         LOG_ERROR("Failed to save memory: {}", e.what());
@@ -203,8 +300,20 @@ void AgentMemory::autoSave() {
         // Save without re-locking (called from locked context)
         try {
             fs::create_directories(fs::path(file_path_).parent_path());
-            std::ofstream f(file_path_);
-            f << memory_.dump(2);
+
+            std::string plaintext = memory_.dump(2);
+            auto encrypted = dpapi_encrypt(plaintext);
+
+            if (!encrypted.empty()) {
+                std::ofstream f(file_path_, std::ios::binary);
+                f.write(reinterpret_cast<char*>(encrypted.data()),
+                        static_cast<std::streamsize>(encrypted.size()));
+            } else {
+                // Fallback
+                std::ofstream f(file_path_);
+                f << plaintext;
+            }
+
             dirty_ = false;
             last_save_ = now;
         } catch (...) {}

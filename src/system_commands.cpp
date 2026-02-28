@@ -1,6 +1,9 @@
 /**
  * @file system_commands.cpp
- * @brief Comprehensive Windows system controls — Part 1 (Brightness, Network, Settings, Power)
+ * @brief Comprehensive Windows system controls — NO SHELL SPAWNING
+ *
+ * All commands use direct Win32 APIs, WMI COM, or safe CreateProcess calls.
+ * The _popen() function is completely eliminated to prevent command injection.
  */
 
 #include "system_commands.h"
@@ -16,6 +19,9 @@
 #include <iphlpapi.h>
 #include <psapi.h>
 #include <powrprof.h>
+#include <wlanapi.h>
+
+#pragma comment(lib, "wlanapi.lib")
 
 #ifdef VISION_HAS_SPDLOG
 #include <spdlog/spdlog.h>
@@ -78,29 +84,148 @@ std::wstring SystemCommands::toWide(const std::string& str) {
     return wide;
 }
 
-std::string SystemCommands::runCommand(const std::string& cmd) {
-    FILE* pipe = _popen(cmd.c_str(), "r");
-    if (!pipe) return "";
-    char buf[256];
-    std::string result;
-    while (fgets(buf, sizeof(buf), pipe)) result += buf;
-    _pclose(pipe);
-    // Trim trailing whitespace
-    while (!result.empty() && (result.back() == '\n' || result.back() == '\r' || result.back() == ' '))
-        result.pop_back();
-    return result;
+// ═══════════════════ WMI Helper (replaces _popen for brightness) ═══════════════════
+
+/// RAII COM initializer for threads that call WMI
+struct ComScope {
+    HRESULT hr;
+    ComScope() { hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED); }
+    ~ComScope() { if (SUCCEEDED(hr)) CoUninitialize(); }
+    bool ok() const { return SUCCEEDED(hr) || hr == S_FALSE; }
+};
+
+static int wmi_get_brightness() {
+    ComScope com;
+    if (!com.ok()) return 50;
+
+    IWbemLocator* pLoc = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_IWbemLocator, (void**)&pLoc);
+    if (FAILED(hr) || !pLoc) return 50;
+
+    IWbemServices* pSvc = nullptr;
+    hr = pLoc->ConnectServer(_bstr_t(L"ROOT\\WMI"), nullptr, nullptr, nullptr,
+                              0, nullptr, nullptr, &pSvc);
+    if (FAILED(hr) || !pSvc) { pLoc->Release(); return 50; }
+
+    CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
+                      RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
+                      nullptr, EOAC_NONE);
+
+    IEnumWbemClassObject* pEnum = nullptr;
+    hr = pSvc->ExecQuery(_bstr_t(L"WQL"),
+                          _bstr_t(L"SELECT CurrentBrightness FROM WmiMonitorBrightness"),
+                          WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+                          nullptr, &pEnum);
+    
+    int brightness = 50;
+    if (SUCCEEDED(hr) && pEnum) {
+        IWbemClassObject* pObj = nullptr;
+        ULONG returned = 0;
+        if (pEnum->Next(WBEM_INFINITE, 1, &pObj, &returned) == S_OK && pObj) {
+            VARIANT val;
+            VariantInit(&val);
+            if (SUCCEEDED(pObj->Get(L"CurrentBrightness", 0, &val, nullptr, nullptr))) {
+                brightness = val.intVal;
+            }
+            VariantClear(&val);
+            pObj->Release();
+        }
+        pEnum->Release();
+    }
+
+    pSvc->Release();
+    pLoc->Release();
+    return brightness;
 }
 
-// ═══════════════════ Brightness (WMI) ═══════════════════
+static bool wmi_set_brightness(int level) {
+    ComScope com;
+    if (!com.ok()) return false;
+
+    IWbemLocator* pLoc = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_IWbemLocator, (void**)&pLoc);
+    if (FAILED(hr) || !pLoc) return false;
+
+    IWbemServices* pSvc = nullptr;
+    hr = pLoc->ConnectServer(_bstr_t(L"ROOT\\WMI"), nullptr, nullptr, nullptr,
+                              0, nullptr, nullptr, &pSvc);
+    if (FAILED(hr) || !pSvc) { pLoc->Release(); return false; }
+
+    CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
+                      RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
+                      nullptr, EOAC_NONE);
+
+    // Get the class method input params
+    IWbemClassObject* pClass = nullptr;
+    hr = pSvc->GetObject(_bstr_t(L"WmiMonitorBrightnessMethods"), 0, nullptr, &pClass, nullptr);
+    if (FAILED(hr) || !pClass) { pSvc->Release(); pLoc->Release(); return false; }
+
+    IWbemClassObject* pInParamsClass = nullptr;
+    hr = pClass->GetMethod(L"WmiSetBrightness", 0, &pInParamsClass, nullptr);
+    pClass->Release();
+    if (FAILED(hr) || !pInParamsClass) { pSvc->Release(); pLoc->Release(); return false; }
+
+    IWbemClassObject* pInParams = nullptr;
+    pInParamsClass->SpawnInstance(0, &pInParams);
+    pInParamsClass->Release();
+    if (!pInParams) { pSvc->Release(); pLoc->Release(); return false; }
+
+    VARIANT varTimeout, varBrightness;
+    VariantInit(&varTimeout);
+    varTimeout.vt = VT_UI4;
+    varTimeout.ulVal = 1;
+    pInParams->Put(L"Timeout", 0, &varTimeout, 0);
+
+    VariantInit(&varBrightness);
+    varBrightness.vt = VT_UI1;
+    varBrightness.bVal = static_cast<BYTE>(level);
+    pInParams->Put(L"Brightness", 0, &varBrightness, 0);
+
+    // Find the first instance
+    IEnumWbemClassObject* pEnum = nullptr;
+    hr = pSvc->ExecQuery(_bstr_t(L"WQL"),
+                          _bstr_t(L"SELECT * FROM WmiMonitorBrightnessMethods"),
+                          WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+                          nullptr, &pEnum);
+
+    bool success = false;
+    if (SUCCEEDED(hr) && pEnum) {
+        IWbemClassObject* pObj = nullptr;
+        ULONG returned = 0;
+        if (pEnum->Next(WBEM_INFINITE, 1, &pObj, &returned) == S_OK && pObj) {
+            VARIANT varPath;
+            VariantInit(&varPath);
+            if (SUCCEEDED(pObj->Get(L"__PATH", 0, &varPath, nullptr, nullptr))) {
+                IWbemClassObject* pOutParams = nullptr;
+                hr = pSvc->ExecMethod(varPath.bstrVal, _bstr_t(L"WmiSetBrightness"),
+                                       0, nullptr, pInParams, &pOutParams, nullptr);
+                success = SUCCEEDED(hr);
+                if (pOutParams) pOutParams->Release();
+            }
+            VariantClear(&varPath);
+            pObj->Release();
+        }
+        pEnum->Release();
+    }
+
+    pInParams->Release();
+    pSvc->Release();
+    pLoc->Release();
+    return success;
+}
+
+// ═══════════════════ Brightness (WMI — no shell) ═══════════════════
 
 std::pair<bool, std::string> SystemCommands::setBrightness(int level) {
     level = std::clamp(level, 0, 100);
-    std::string cmd = "powershell -NoProfile -Command \"(Get-WmiObject -Namespace root/wmi "
-                      "-Class WmiMonitorBrightnessMethods).WmiSetBrightness(1," +
-                      std::to_string(level) + ")\" 2>nul";
-    runCommand(cmd);
-    LOG_INFO("Brightness set to {}%", level);
-    return {true, "Brightness set to " + std::to_string(level) + "%"};
+    bool ok = wmi_set_brightness(level);
+    if (ok) {
+        LOG_INFO("Brightness set to {}%", level);
+        return {true, "Brightness set to " + std::to_string(level) + "%"};
+    }
+    return {false, "Failed to set brightness (WMI error)"};
 }
 
 std::pair<bool, std::string> SystemCommands::brightnessUp(int amount) {
@@ -114,19 +239,29 @@ std::pair<bool, std::string> SystemCommands::brightnessDown(int amount) {
 }
 
 int SystemCommands::getCurrentBrightness() {
-    std::string result = runCommand(
-        "powershell -NoProfile -Command \"(Get-WmiObject -Namespace root/wmi "
-        "-Class WmiMonitorBrightness).CurrentBrightness\" 2>nul");
-    try { return std::stoi(result); }
-    catch (...) { return 50; }
+    return wmi_get_brightness();
 }
 
-// ═══════════════════ Network ═══════════════════
+// ═══════════════════ Network (Win32 APIs — no shell) ═══════════════════
 
 std::pair<bool, std::string> SystemCommands::toggleWifi(bool enable) {
-    std::string cmd = "netsh interface set interface \"Wi-Fi\" " +
-                      std::string(enable ? "enable" : "disable");
-    runCommand(cmd);
+    // Use CreateProcessW to safely invoke netsh with separate args
+    std::wstring args = L"netsh interface set interface \"Wi-Fi\" ";
+    args += enable ? L"enable" : L"disable";
+
+    STARTUPINFOW si{}; si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+
+    std::wstring cmdline = L"cmd.exe /c " + args;
+
+    if (CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 5000);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
     return {true, std::string("WiFi ") + (enable ? "enabled" : "disabled")};
 }
 
@@ -140,14 +275,78 @@ void SystemCommands::toggleAirplaneMode() {
 }
 
 std::string SystemCommands::getWifiName() {
-    return runCommand("netsh wlan show interfaces | findstr /R \"^....SSID\" | findstr /V BSSID");
+    // Use Wlan API instead of shelling out to netsh
+    HANDLE hClient = nullptr;
+    DWORD version = 0;
+    DWORD result = WlanOpenHandle(2, nullptr, &version, &hClient);
+    if (result != ERROR_SUCCESS) return "Unknown";
+
+    PWLAN_INTERFACE_INFO_LIST ifList = nullptr;
+    result = WlanEnumInterfaces(hClient, nullptr, &ifList);
+    if (result != ERROR_SUCCESS || !ifList || ifList->dwNumberOfItems == 0) {
+        WlanCloseHandle(hClient, nullptr);
+        return "No WiFi adapter";
+    }
+
+    std::string ssid = "Not connected";
+    for (DWORD i = 0; i < ifList->dwNumberOfItems; i++) {
+        auto& iface = ifList->InterfaceInfo[i];
+        if (iface.isState == wlan_interface_state_connected) {
+            PWLAN_CONNECTION_ATTRIBUTES pAttr = nullptr;
+            DWORD attrSize = 0;
+            WLAN_OPCODE_VALUE_TYPE opcode = wlan_opcode_value_type_invalid;
+            if (WlanQueryInterface(hClient, &iface.InterfaceGuid,
+                                    wlan_intf_opcode_current_connection,
+                                    nullptr, &attrSize, (PVOID*)&pAttr,
+                                    &opcode) == ERROR_SUCCESS && pAttr) {
+                auto& dot11 = pAttr->wlanAssociationAttributes.dot11Ssid;
+                ssid = std::string(reinterpret_cast<char*>(dot11.ucSSID), dot11.uSSIDLength);
+                WlanFreeMemory(pAttr);
+                break;
+            }
+        }
+    }
+
+    WlanFreeMemory(ifList);
+    WlanCloseHandle(hClient, nullptr);
+    return "SSID: " + ssid;
 }
 
 std::string SystemCommands::getIPAddress() {
-    std::string local = runCommand(
-        "powershell -NoProfile -Command \"(Get-NetIPAddress -AddressFamily IPv4 "
-        "| Where-Object {$_.InterfaceAlias -notlike '*Loopback*'}).IPAddress\" 2>nul");
-    return local.empty() ? "Unknown" : local;
+    // Use GetAdaptersAddresses instead of PowerShell
+    ULONG bufLen = 16384;
+    std::vector<BYTE> buffer(bufLen);
+    auto* addrs = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data());
+
+    ULONG result = GetAdaptersAddresses(AF_INET,
+        GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+        nullptr, addrs, &bufLen);
+
+    if (result == ERROR_BUFFER_OVERFLOW) {
+        buffer.resize(bufLen);
+        addrs = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data());
+        result = GetAdaptersAddresses(AF_INET,
+            GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+            nullptr, addrs, &bufLen);
+    }
+
+    if (result != NO_ERROR) return "Unknown";
+
+    for (auto* curr = addrs; curr; curr = curr->Next) {
+        // Skip loopback and tunnel adapters
+        if (curr->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+        if (curr->OperStatus != IfOperStatusUp) continue;
+
+        for (auto* ua = curr->FirstUnicastAddress; ua; ua = ua->Next) {
+            auto* sa = reinterpret_cast<sockaddr_in*>(ua->Address.lpSockaddr);
+            char ip[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, &sa->sin_addr, ip, sizeof(ip))) {
+                std::string addr(ip);
+                if (addr != "127.0.0.1") return addr;
+            }
+        }
+    }
+    return "Unknown";
 }
 
 // ═══════════════════ Display / Accessibility ═══════════════════
@@ -157,15 +356,41 @@ std::pair<bool, std::string> SystemCommands::toggleNightLight(bool enable) {
     return {true, "Opened Night Light settings"};
 }
 
+static bool terminateProcessByName(const std::wstring& exeName) {
+    // Shared helper: find and terminate process by exact exe name
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    bool killed = false;
+
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, exeName.c_str()) == 0) {
+                HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
+                if (hProc) {
+                    TerminateProcess(hProc, 0);
+                    CloseHandle(hProc);
+                    killed = true;
+                }
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+
+    CloseHandle(snap);
+    return killed;
+}
+
 std::pair<bool, std::string> SystemCommands::toggleMagnifier(bool enable) {
     if (enable) ShellExecuteW(nullptr, L"open", L"magnify.exe", nullptr, nullptr, SW_SHOW);
-    else runCommand("taskkill /IM magnify.exe /F 2>nul");
+    else terminateProcessByName(L"magnify.exe");
     return {true, std::string("Magnifier ") + (enable ? "opened" : "closed")};
 }
 
 std::pair<bool, std::string> SystemCommands::toggleNarrator(bool enable) {
     if (enable) ShellExecuteW(nullptr, L"open", L"narrator.exe", nullptr, nullptr, SW_SHOW);
-    else runCommand("taskkill /IM narrator.exe /F 2>nul");
+    else terminateProcessByName(L"narrator.exe");
     return {true, std::string("Narrator ") + (enable ? "started" : "stopped")};
 }
 
@@ -225,7 +450,6 @@ json SystemCommands::getSystemSummary() {
     summary["battery"] = getBatteryInfo();
     summary["storage"] = getStorageInfo();
     summary["uptime"] = getUptime();
-    // CPU/RAM via performance counters
     MEMORYSTATUSEX mem{};
     mem.dwLength = sizeof(mem);
     GlobalMemoryStatusEx(&mem);
@@ -274,13 +498,13 @@ std::vector<AppInfo> SystemCommands::listRunningApps() {
     return apps;
 }
 
-// ═══════════════════ Process Management ═══════════════════
+// ═══════════════════ Process Management (Win32 API — no taskkill) ═══════════
 
 std::pair<bool, std::string> SystemCommands::killProcess(const std::string& name) {
     std::string lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
     
-    // S1 fix: reject shell metacharacters to prevent command injection
+    // Validate: reject shell metacharacters
     for (char c : lower) {
         if (c == '&' || c == '|' || c == ';' || c == '>' || c == '<' ||
             c == '"' || c == '\'' || c == '`' || c == '(' || c == ')' ||
@@ -297,9 +521,13 @@ std::pair<bool, std::string> SystemCommands::killProcess(const std::string& name
     
     std::string exe = lower;
     if (exe.find(".exe") == std::string::npos) exe += ".exe";
-    std::string cmd = "taskkill /IM " + exe + " /F 2>nul";
-    runCommand(cmd);
-    return {true, "Killed process: " + name};
+
+    // Use TerminateProcess via snapshot — no shell involved
+    std::wstring wexe = toWide(exe);
+    if (terminateProcessByName(wexe)) {
+        return {true, "Killed process: " + name};
+    }
+    return {false, "Process not found: " + name};
 }
 
 bool SystemCommands::isAppRunning(const std::string& name) {
@@ -367,11 +595,10 @@ void SystemCommands::openControlPanel() {
 // ═══════════════════ Timers & Stopwatch ═══════════════════
 
 void SystemCommands::startTimer(int seconds, const std::string& label) {
-    int clamped = std::clamp(seconds, 0, 86400);  // L9 fix: max 24 hours
+    int clamped = std::clamp(seconds, 0, 86400);
     timer_threads_.emplace_back([clamped, label]() {
         std::this_thread::sleep_for(std::chrono::seconds(clamped));
         Beep(1200, 500);
-        // L1 fix: use MultiByteToWideChar instead of wstring(begin, end)
         int wlen = MultiByteToWideChar(CP_UTF8, 0, label.c_str(), -1, nullptr, 0);
         std::wstring wlabel(wlen > 0 ? wlen - 1 : 0, L'\0');
         MultiByteToWideChar(CP_UTF8, 0, label.c_str(), -1, wlabel.data(), wlen);
@@ -400,7 +627,6 @@ void SystemCommands::stopStopwatch() { stopwatch_running_ = false; }
 void SystemCommands::startFocusMode(int minutes) {
     if (focus_mode_active_) return;
     focus_mode_active_ = true;
-    // T5 fix: join previous thread before starting new one
     if (focus_thread_.joinable()) focus_thread_.join();
     focus_thread_ = std::thread([this, minutes]() {
         auto end = std::chrono::steady_clock::now() + std::chrono::minutes(minutes);
@@ -412,7 +638,6 @@ void SystemCommands::startFocusMode(int minutes) {
             Beep(800, 300); Beep(1000, 300); Beep(1200, 500);
         }
     });
-    // T5 fix: no longer detached — joined in destructor
 }
 
 void SystemCommands::stopFocusMode() { focus_mode_active_ = false; }
@@ -430,7 +655,6 @@ json SystemCommands::systemHealthScan() {
     GlobalMemoryStatusEx(&mem);
     report["ram_usage"] = (int)mem.dwMemoryLoad;
     
-    // Warnings
     json warnings = json::array();
     if (mem.dwMemoryLoad > 90) warnings.push_back("High RAM usage: " + std::to_string(mem.dwMemoryLoad) + "%");
     auto bat = getBatteryInfo();
@@ -449,7 +673,7 @@ void SystemCommands::searchInBrowser(const std::string& query, const std::string
     
     auto it = BROWSER_EXE.find(lower_browser);
     std::string exe = (it != BROWSER_EXE.end()) ? it->second : (browser + ".exe");
-    // S2 fix: URL-encode the query
+    // URL-encode the query
     std::string encoded_query;
     for (unsigned char c : query) {
         if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
@@ -464,8 +688,7 @@ void SystemCommands::searchInBrowser(const std::string& query, const std::string
     }
     std::string url = "https://www.google.com/search?q=" + encoded_query;
     
-    // Fix: Use CreateProcessA to directly launch the specified browser
-    // and avoid the OS also opening the default browser via URL protocol.
+    // Safe CreateProcess — pass exe and URL as separate entities
     std::string cmdline = "\"" + exe + "\" \"" + url + "\"";
     STARTUPINFOA si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
@@ -474,7 +697,6 @@ void SystemCommands::searchInBrowser(const std::string& query, const std::string
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     } else {
-        // Fallback if CreateProcess fails (e.g. exe not on PATH)
         ShellExecuteA(nullptr, "open", exe.c_str(), url.c_str(), nullptr, SW_SHOW);
     }
 }

@@ -5,6 +5,7 @@
 
 #include "action_executor.h"
 #include "vision_ai.h"
+#include "ui_automation.h"
 #include <thread>
 #include <chrono>
 #include <sstream>
@@ -33,6 +34,12 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 namespace vision {
+
+// File-local UI Automation instance (lazy — COM init happens once)
+static UIAutomation& getUIAuto() {
+    static UIAutomation instance;
+    return instance;
+}
 
 ActionExecutor::ActionExecutor(VisionAI& app) : app_(app) {
     initActionMap();
@@ -73,6 +80,7 @@ void ActionExecutor::initActionMap() {
     registerAction("clipboard_get", [this](const json& p) { return actionClipboardGet(p); });
     registerAction("clipboard_set", [this](const json& p) { return actionClipboardSet(p); });
     registerAction("task_complete", [this](const json& p) { return actionTaskComplete(p); });
+    registerAction("get_ui_tree", [this](const json& p) { return actionGetUITree(p); });
 }
 
 void ActionExecutor::registerAction(const std::string& name, ActionHandler handler) {
@@ -288,8 +296,10 @@ std::pair<bool, std::string> ActionExecutor::actionOpenUrl(const json& params) {
 std::pair<bool, std::string> ActionExecutor::actionSearchWeb(const json& params) {
     std::string query = params.value("query", "");
     if (query.empty()) return {false, "No query"};
-    auto result = app_.webSearch().quickAnswer(query);
-    return {true, result};
+    // Offline-only: route all web searches through the local browser
+    std::string browser = params.value("browser", "edge");
+    app_.sysCmds().searchInBrowser(query, browser);
+    return {true, "🔍 Opened search in browser: " + query};
 }
 
 std::pair<bool, std::string> ActionExecutor::actionSearchInBrowser(const json& params) {
@@ -412,6 +422,16 @@ std::pair<bool, std::string> ActionExecutor::actionClipboardSet(const json& para
 
 std::pair<bool, std::string> ActionExecutor::actionTaskComplete(const json& params) {
     return {true, params.value("message", "Task completed")};
+}
+
+std::pair<bool, std::string> ActionExecutor::actionGetUITree(const json& params) {
+    int depth = params.value("depth", 3);
+    auto& uia = getUIAuto();
+    if (!uia.isAvailable()) {
+        return {false, "UI Automation not available (COM init failed)"};
+    }
+    auto tree = uia.getAccessibilityTree(depth);
+    return {true, tree.dump(2)};
 }
 
 } // namespace vision

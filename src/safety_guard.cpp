@@ -1,6 +1,11 @@
 /**
  * @file safety_guard.cpp
- * @brief Path protection and action safety validation
+ * @brief WHITELIST-based path protection and action safety validation
+ *
+ * Logic:
+ *   1. System paths (Windows, Program Files, etc.) → HARD BLOCK (never allowed)
+ *   2. Whitelisted paths (AI_Workspace, Downloads, Desktop) → ALLOWED
+ *   3. Everything else → DENIED with "user confirmation required" message
  */
 
 #include "safety_guard.h"
@@ -8,15 +13,16 @@
 #include <chrono>
 #include <filesystem>
 #include <regex>
-#include <windows.h> // Required for GetWindowsDirectoryA
+#include <windows.h>
+#include <shlobj.h>
 
 namespace fs = std::filesystem;
 
 namespace vision {
 
-// Protected system paths that should never be modified
-// Dynamically detect the system drive for protected paths
-static std::vector<std::string> buildProtectedPaths() {
+// ═══════════════════ Protected System Paths (Hard Block) ═══════════════════
+
+std::vector<std::string> SafetyGuard::buildProtectedPaths() {
     char windir[MAX_PATH];
     UINT len = GetWindowsDirectoryA(windir, MAX_PATH);
     std::string drive = (len > 0) ? std::string(windir, 2) + "\\" : "C:\\";
@@ -32,12 +38,46 @@ static std::vector<std::string> buildProtectedPaths() {
         drive + "Recovery",
         drive + "Boot",
         drive + "$Recycle.Bin",
-        drive + "System Volume Information", // Added back from original list
-        drive + "EFI", // Added back from original list
+        drive + "System Volume Information",
+        drive + "EFI",
     };
 }
 
 const std::vector<std::string> SafetyGuard::PROTECTED_PATHS = buildProtectedPaths();
+
+// ═══════════════════ Whitelisted Safe Paths ═══════════════════
+
+std::vector<std::string> SafetyGuard::buildWhitelistedPaths() const {
+    std::vector<std::string> paths;
+    char user_profile[MAX_PATH];
+
+    // AI_Workspace — primary sandbox
+    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_PROFILE, nullptr, 0, user_profile))) {
+        paths.push_back(std::string(user_profile) + "\\AI_Workspace");
+    }
+
+    // Downloads
+    char downloads[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_PROFILE, nullptr, 0, downloads))) {
+        paths.push_back(std::string(downloads) + "\\Downloads");
+    }
+
+    // Desktop
+    char desktop[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, 0, desktop))) {
+        paths.push_back(std::string(desktop));
+    }
+
+    // Temp (for scratch files)
+    char temp[MAX_PATH];
+    if (GetTempPathA(MAX_PATH, temp)) {
+        paths.push_back(std::string(temp));
+    }
+
+    return paths;
+}
+
+// ═══════════════════ Action Classification ═══════════════════
 
 const std::vector<std::string> SafetyGuard::CAUTION_ACTIONS = {
     "move", "rename", "copy_to_system", "modify_config",
@@ -54,7 +94,13 @@ const std::vector<std::string> SafetyGuard::PROTECTED_PROCESSES = {
     "dwm.exe", "System", "Registry", "taskmgr.exe",
 };
 
-SafetyGuard::SafetyGuard() = default;
+// ═══════════════════ Constructor ═══════════════════
+
+SafetyGuard::SafetyGuard() {
+    WHITELISTED_PATHS = buildWhitelistedPaths();
+}
+
+// ═══════════════════ Path Utilities ═══════════════════
 
 std::string SafetyGuard::normalizePath(const std::string& path) const {
     try {
@@ -62,11 +108,14 @@ std::string SafetyGuard::normalizePath(const std::string& path) const {
         if (p.is_relative()) {
             p = fs::absolute(p);
         }
-        // Use lexically_normal to clean up .. and .
         std::string normalized = p.lexically_normal().string();
         // Uppercase drive letter
         if (normalized.size() >= 2 && normalized[1] == ':') {
             normalized[0] = static_cast<char>(std::toupper(normalized[0]));
+        }
+        // Remove trailing backslash (unless root)
+        while (normalized.size() > 3 && normalized.back() == '\\') {
+            normalized.pop_back();
         }
         return normalized;
     } catch (...) {
@@ -88,6 +137,8 @@ bool SafetyGuard::matchesPattern(const std::string& path,
     return lower_path.starts_with(lower_pattern);
 }
 
+// ═══════════════════ Core Whitelist/Protection Checks ═══════════════════
+
 bool SafetyGuard::isPathProtected(const std::string& path) const {
     for (const auto& protected_path : PROTECTED_PATHS) {
         if (matchesPattern(path, protected_path)) {
@@ -96,6 +147,17 @@ bool SafetyGuard::isPathProtected(const std::string& path) const {
     }
     return false;
 }
+
+bool SafetyGuard::isPathWhitelisted(const std::string& path) const {
+    for (const auto& safe_path : WHITELISTED_PATHS) {
+        if (matchesPattern(path, safe_path)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ═══════════════════ Action Level Classification ═══════════════════
 
 SafetyGuard::ActionLevel SafetyGuard::getActionLevel(const std::string& command) const {
     std::string lower = command;
@@ -125,29 +187,38 @@ std::string SafetyGuard::getActionLevelString(const std::string& command) const 
     return "UNKNOWN";
 }
 
+// ═══════════════════ File Operation Validation (WHITELIST-FIRST) ═══════════════════
+
 std::pair<bool, std::string> SafetyGuard::validateFileOperation(
     const std::string& operation, const std::string& path) const {
     
-    // Check protected paths
+    // STEP 1: Hard-block system-critical paths (always denied, no override)
     if (isPathProtected(path)) {
-        return {false, "Path is protected: " + path};
+        return {false, "🛑 BLOCKED: System-critical path is protected: " + path};
     }
     
-    // Check action level
-    auto level = getActionLevel(operation);
-    if (level == ActionLevel::Danger) {
-        // Allow delete to recycle only
-        std::string lower_op = operation;
-        std::transform(lower_op.begin(), lower_op.end(), lower_op.begin(), ::tolower);
-        if (lower_op.find("recycle") != std::string::npos || 
-            lower_op.find("trash") != std::string::npos) {
-            return {true, "Operation will use recycle bin (recoverable)"};
+    // STEP 2: Check whitelist — if inside safe zone, apply action-level rules
+    if (isPathWhitelisted(path)) {
+        auto level = getActionLevel(operation);
+        if (level == ActionLevel::Danger) {
+            // Even in the whitelist, destructive ops need extra care
+            std::string lower_op = operation;
+            std::transform(lower_op.begin(), lower_op.end(), lower_op.begin(), ::tolower);
+            if (lower_op.find("recycle") != std::string::npos ||
+                lower_op.find("trash") != std::string::npos) {
+                return {true, "✅ Operation will use recycle bin (recoverable)"};
+            }
+            return {true, "⚠️ Dangerous operation allowed inside AI workspace: " + operation};
         }
-        return {false, "Dangerous operation blocked: " + operation};
+        return {true, "✅ Operation allowed (path is in AI workspace)"};
     }
     
-    return {true, "Operation allowed"};
+    // STEP 3: Path is outside whitelist — DENY and require user confirmation
+    return {false, "⛔ Path outside AI workspace. User confirmation required for: " + path +
+                   "\nAllowed folders: AI_Workspace, Downloads, Desktop, Temp"};
 }
+
+// ═══════════════════ Confirmation Check ═══════════════════
 
 std::pair<bool, int> SafetyGuard::requiresConfirmation(const std::string& command) const {
     auto level = getActionLevel(command);
@@ -163,6 +234,8 @@ std::pair<bool, int> SafetyGuard::requiresConfirmation(const std::string& comman
     
     return {false, 0};
 }
+
+// ═══════════════════ Audit Logging ═══════════════════
 
 void SafetyGuard::logAction(const std::string& action, const std::string& target,
                              const std::string& status) {

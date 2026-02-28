@@ -1,6 +1,10 @@
 /**
  * @file user_behavior.cpp
- * @brief User behavior tracking and suggestion engine
+ * @brief User behavior tracking with DPAPI-encrypted persistence
+ *
+ * All behavioral data is encrypted at rest using Windows DPAPI.
+ * Only the logged-in Windows user account can decrypt the data.
+ * Handles transparent migration from old plaintext JSON files.
  */
 
 #include "user_behavior.h"
@@ -9,11 +13,58 @@
 #include <chrono>
 #include <ctime>
 #include <sstream>
+#include <windows.h>
+#include <wincrypt.h>
+
+#pragma comment(lib, "crypt32.lib")
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 namespace vision {
+
+// ═══════════════════ DPAPI Helpers ═══════════════════
+
+static std::vector<BYTE> dpapi_encrypt(const std::string& plaintext) {
+    DATA_BLOB input;
+    input.pbData = const_cast<BYTE*>(reinterpret_cast<const BYTE*>(plaintext.data()));
+    input.cbData = static_cast<DWORD>(plaintext.size());
+
+    DATA_BLOB output{};
+    if (CryptProtectData(&input, L"VisionAI_Behavior", nullptr, nullptr, nullptr,
+                          CRYPTPROTECT_UI_FORBIDDEN, &output)) {
+        std::vector<BYTE> result(output.pbData, output.pbData + output.cbData);
+        LocalFree(output.pbData);
+        return result;
+    }
+    return {};
+}
+
+static std::string dpapi_decrypt(const std::vector<BYTE>& encrypted) {
+    DATA_BLOB input;
+    input.pbData = const_cast<BYTE*>(encrypted.data());
+    input.cbData = static_cast<DWORD>(encrypted.size());
+
+    DATA_BLOB output{};
+    if (CryptUnprotectData(&input, nullptr, nullptr, nullptr, nullptr,
+                            CRYPTPROTECT_UI_FORBIDDEN, &output)) {
+        std::string result(reinterpret_cast<char*>(output.pbData), output.cbData);
+        LocalFree(output.pbData);
+        return result;
+    }
+    return {};
+}
+
+static bool is_plaintext_json(const std::vector<BYTE>& data) {
+    if (data.empty()) return false;
+    size_t start = 0;
+    if (data.size() >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) start = 3;
+    while (start < data.size() && (data[start] == ' ' || data[start] == '\t' ||
+                                     data[start] == '\n' || data[start] == '\r')) start++;
+    return start < data.size() && data[start] == '{';
+}
+
+// ═══════════════════ UserBehaviorTracker ═══════════════════
 
 UserBehaviorTracker::UserBehaviorTracker(const std::string& path)
     : file_path_(path.empty() ? "data/user_behavior.json" : path) {
@@ -29,16 +80,52 @@ void UserBehaviorTracker::load() {
                  {"time_patterns", json::object()}, {"sessions", 0}};
         return;
     }
-    try { std::ifstream f(file_path_); f >> data_; }
-    catch (...) { data_ = json::object(); }
+    try {
+        // Read raw bytes
+        std::ifstream f(file_path_, std::ios::binary);
+        std::vector<BYTE> raw((std::istreambuf_iterator<char>(f)),
+                               std::istreambuf_iterator<char>());
+        f.close();
+
+        if (raw.empty()) { data_ = json::object(); return; }
+
+        // Migration: detect plaintext JSON
+        if (is_plaintext_json(raw)) {
+            std::string text(raw.begin(), raw.end());
+            data_ = json::parse(text);
+            return;  // Will be re-saved encrypted on next save()
+        }
+
+        // Decrypt DPAPI blob
+        std::string decrypted = dpapi_decrypt(raw);
+        if (decrypted.empty()) {
+            data_ = json::object();
+            return;
+        }
+        data_ = json::parse(decrypted);
+    } catch (...) {
+        data_ = json::object();
+    }
 }
 
 void UserBehaviorTracker::save() {
     std::lock_guard lock(mutex_);
     try {
         fs::create_directories(fs::path(file_path_).parent_path());
-        std::ofstream f(file_path_);
-        f << data_.dump(2) << std::flush;
+
+        std::string plaintext = data_.dump(2);
+        auto encrypted = dpapi_encrypt(plaintext);
+
+        if (!encrypted.empty()) {
+            std::ofstream f(file_path_, std::ios::binary);
+            f.write(reinterpret_cast<char*>(encrypted.data()),
+                    static_cast<std::streamsize>(encrypted.size()));
+            f << std::flush;
+        } else {
+            // Fallback to plaintext if DPAPI fails
+            std::ofstream f(file_path_);
+            f << plaintext << std::flush;
+        }
     } catch (...) {}
 }
 
@@ -89,7 +176,6 @@ std::vector<std::string> UserBehaviorTracker::getSuggestions(const std::string& 
     std::lock_guard lock(mutex_);
     std::vector<std::string> suggestions;
     
-    // Get current time period
     auto now = std::chrono::system_clock::now();
     auto tt = std::chrono::system_clock::to_time_t(now);
     std::tm tm; localtime_s(&tm, &tt);
@@ -100,7 +186,6 @@ std::vector<std::string> UserBehaviorTracker::getSuggestions(const std::string& 
     else if (hour >= 17 && hour < 22) period = "evening";
     else period = "night";
     
-    // Get frequently used commands for this time period
     std::vector<std::pair<int, std::string>> ranked;
     
     if (data_.contains("time_patterns") && data_["time_patterns"].contains(period)) {
@@ -163,7 +248,6 @@ json UserBehaviorTracker::getInsights() const {
         insights["total_commands"] = total;
     }
     
-    // Top 5 commands
     auto top_cmds = getTopCommands_unlocked(5);
     insights["top_commands"] = json::array();
     for (auto& [cmd, cnt] : top_cmds) {

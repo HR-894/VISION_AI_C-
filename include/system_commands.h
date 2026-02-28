@@ -113,7 +113,6 @@ private:
     std::atomic<bool> focus_mode_active_{false};
     std::thread focus_thread_;
 
-    std::string runCommand(const std::string& cmd);
     std::wstring toWide(const std::string& str);
 };
 

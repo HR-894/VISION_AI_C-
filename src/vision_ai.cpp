@@ -576,7 +576,9 @@ std::string VisionAI::instantExecute(const std::string& text) {
     // ── Browser / Web ────────────────────────────────────────────
     if (name == "search_web") {
         std::string q = vars.count("query") ? vars.at("query") : "";
-        return web_search_.quickAnswer(q);
+        // Offline-only: open search in the user's local browser
+        sys_cmds_.searchInBrowser(q, "edge");
+        return "🔍 Opened search in browser: " + q;
     }
     if (name == "open_url") {
         std::string url = vars.count("url") ? vars.at("url") : "";

@@ -166,6 +166,7 @@ set(VISION_HEADERS
     include/user_behavior.h
     include/web_search.h
     include/gpu_setup_wizard.h
+    include/ui_automation.h
     include/vision_ai.h
 )
 
@@ -185,6 +186,7 @@ set(VISION_SOURCES
     src/user_behavior.cpp
     src/web_search.cpp
     src/gpu_setup_wizard.cpp
+    src/ui_automation.cpp
     src/vision_ai.cpp
 )
 
@@ -224,9 +226,10 @@ target_link_libraries(VISION_AI PRIVATE
 # Win32 system libraries
 target_link_libraries(VISION_AI PRIVATE
     user32 gdi32 shell32 ole32 oleaut32
-    winmm winhttp comsuppw wbemuuid
+    winmm comsuppw wbemuuid
     pdh setupapi advapi32 iphlpapi
     dwmapi powrprof gdiplus psapi shlwapi
+    wlanapi crypt32 oleacc
 )
 
 # spdlog
