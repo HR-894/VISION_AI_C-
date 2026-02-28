@@ -119,6 +119,10 @@ bool LLMController::loadModel() {
     ctx_params.n_ctx = context_size_;
     // Thread count: use configured value (half of hw threads to prevent OS freeze)
     ctx_params.n_threads = std::max(1, thread_count_);
+    // Match batch threads to inference threads to prevent prompt eval choking
+    ctx_params.n_threads_batch = ctx_params.n_threads;
+    // Enable embeddings so llama_get_embeddings() returns real vectors
+    ctx_params.embeddings = true;
 
     ctx_ = llama_init_from_model(model_, ctx_params);
     if (!ctx_) {
@@ -388,7 +392,14 @@ std::optional<json> LLMController::reactStep(
         "Current observation:\n" + observation.dump(2) + "\n\n";
 
     if (!history.empty()) {
-        prompt += "Previous actions:\n" + formatHistory(history) + "\n\n";
+        // Strict sliding window: only keep last 3 entries to prevent
+        // prompt overflow and OOM crashes on low-RAM (2048 ctx) systems
+        std::vector<json> recent_history;
+        int start_idx = std::max(0, (int)history.size() - 3);
+        for (int i = start_idx; i < (int)history.size(); ++i) {
+            recent_history.push_back(history[i]);
+        }
+        prompt += "Recent actions:\n" + formatHistory(recent_history) + "\n\n";
     }
 
     prompt += "Respond with ONLY a JSON object:\n"
@@ -460,21 +471,12 @@ json LLMController::parseJsonStrict(const std::string& text) {
                 {"params", {{"message", "Unable to process — no output"}}}};
     }
 
-    // If it looks like a direct answer/explanation, wrap as task_complete
-    // If it mentions an app or action, wrap as type_text
-    std::string lower = trimmed;
-    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-
-    if (lower.find("type") != std::string::npos || lower.find("write") != std::string::npos ||
-        lower.find("enter") != std::string::npos || trimmed.size() < 50) {
-        return {{"thought", "LLM produced text — forwarding as type_text"},
-                {"action", "type_text"},
-                {"params", {{"text", trimmed}}}};
-    }
-
-    return {{"thought", "LLM produced text instead of JSON — completing task"},
+    // ── ALL hallucinated text maps to task_complete ──────────────
+    // NEVER use type_text as fallback — it would blindly type into
+    // whatever window is active (code editor, chat app, etc.)
+    return {{"thought", "LLM produced plain text instead of JSON — safely completing task"},
             {"action", "task_complete"},
-            {"params", {{"message", trimmed}}}};
+            {"params", {{"message", "I am unable to execute this command. " + trimmed}}}};
 }
 
 json LLMController::validateAndFill(json parsed) {
