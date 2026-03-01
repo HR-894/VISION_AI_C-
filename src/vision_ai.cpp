@@ -450,17 +450,32 @@ void VisionAI::onSendCommand() {
         auto match = template_matcher_.match(command);
         if (match) {
             auto result = instantExecute(command);
-            {
-                std::lock_guard<std::mutex> lock(state_mutex_);
-                last_response_ = result;
+
+            // Safety net: if the template matched but execution failed
+            // (e.g. "open chrome youtube" → "Couldn't find app 'chrome youtube'"),
+            // don't return — fall through to the LLM agent for smarter intent parsing
+            std::string lower_result = result;
+            std::transform(lower_result.begin(), lower_result.end(),
+                           lower_result.begin(), ::tolower);
+            if (lower_result.find("couldn't find app") != std::string::npos ||
+                lower_result.find("not found") != std::string::npos ||
+                lower_result.find("failed to open") != std::string::npos) {
+                LOG_WARN("Template '{}' failed for '{}' — falling through to agent",
+                         match->template_name, command);
+                // Fall through to Step 4 (agent)
+            } else {
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    last_response_ = result;
+                }
+                emit messageReady("VISION", QString::fromStdString(result));
+                emit statusReady("Ready", "");
+
+                // Record context
+                context_mgr_.recordCommand(command, result);
+                agent_memory_.recordTask(command, result, true, {match->template_name});
+                return;
             }
-            emit messageReady("VISION", QString::fromStdString(result));
-            emit statusReady("Ready", "");
-            
-            // Record context
-            context_mgr_.recordCommand(command, result);
-            agent_memory_.recordTask(command, result, true, {match->template_name});
-            return;
         }
         
         // 4. Route to agent (if available)
@@ -749,8 +764,58 @@ bool VisionAI::openApp(const std::string& name) {
         ShellExecuteA(nullptr, "open", url_it->second.c_str(), nullptr, nullptr, SW_SHOW);
         return true;
     }
+
+    // 5. Fuzzy match: scan APP_SHORTCUTS and STORE_APPS for typo tolerance
+    //    Uses Levenshtein distance ≤ 2 to auto-correct minor typos
+    auto levenshtein = [](const std::string& a, const std::string& b) -> int {
+        int m = (int)a.size(), n = (int)b.size();
+        std::vector<std::vector<int>> dp(m + 1, std::vector<int>(n + 1));
+        for (int i = 0; i <= m; i++) dp[i][0] = i;
+        for (int j = 0; j <= n; j++) dp[0][j] = j;
+        for (int i = 1; i <= m; i++) {
+            for (int j = 1; j <= n; j++) {
+                int cost = (a[i-1] == b[j-1]) ? 0 : 1;
+                dp[i][j] = std::min({dp[i-1][j] + 1, dp[i][j-1] + 1, dp[i-1][j-1] + cost});
+            }
+        }
+        return dp[m][n];
+    };
+
+    std::string best_match;
+    std::string best_exe;
+    int best_dist = 3;  // Only accept distance ≤ 2
+    bool is_store_app = false;
+
+    for (const auto& [key, exe] : APP_SHORTCUTS) {
+        int d = levenshtein(lower, key);
+        if (d < best_dist) {
+            best_dist = d;
+            best_match = key;
+            best_exe = exe;
+            is_store_app = false;
+        }
+    }
+    for (const auto& [key, uri] : STORE_APPS) {
+        int d = levenshtein(lower, key);
+        if (d < best_dist) {
+            best_dist = d;
+            best_match = key;
+            best_exe = uri;
+            is_store_app = true;
+        }
+    }
+
+    if (best_dist <= 2 && !best_match.empty()) {
+        LOG_INFO("Fuzzy match: '{}' → '{}' (distance {})", lower, best_match, best_dist);
+        HINSTANCE r = ShellExecuteA(nullptr, "open", best_exe.c_str(), nullptr, nullptr, SW_SHOW);
+        if (reinterpret_cast<intptr_t>(r) > 32) {
+            // Learn the alias so future uses are instant
+            agent_memory_.learnAlias(lower, best_match);
+            return true;
+        }
+    }
     
-    // 5. Try opening as-is with fallback extension
+    // 6. Try opening as-is with fallback extension
     std::string exe = lower;
     if (exe.find('.') == std::string::npos) exe += ".exe";
     
