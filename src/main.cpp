@@ -5,6 +5,7 @@
 
 #include "vision_ai.h"
 #include "gpu_setup_wizard.h"
+#include "model_downloader_wizard.h"
 #include <QApplication>
 #include <QStyleFactory>
 
@@ -91,6 +92,12 @@ int WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/,
 
     // ── GPU Setup Wizard (first-run only) ──────────────────────
     vision::GpuConfig gpu_cfg = vision::runGpuSetupIfNeeded(nullptr);
+
+    // ── Model Download Wizard (if no model configured) ────────
+    vision::DeviceProfiler startup_profiler;
+    vision::ConfigManager  startup_config;
+    startup_config.load();
+    vision::runModelDownloadIfNeeded(startup_profiler, startup_config, nullptr);
 
     vision::VisionAI window;
     window.show();

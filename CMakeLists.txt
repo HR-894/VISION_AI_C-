@@ -30,7 +30,7 @@ option(VISION_BUILD_TESTS     "Build unit tests"                   OFF)
 # ============================================================
 # Dependencies — Qt6
 # ============================================================
-find_package(Qt6 REQUIRED COMPONENTS Widgets Core)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Core Network)
 qt_standard_project_setup()
 
 # ============================================================
@@ -166,6 +166,7 @@ set(VISION_HEADERS
     include/user_behavior.h
     include/web_search.h
     include/gpu_setup_wizard.h
+    include/model_downloader_wizard.h
     include/ui_automation.h
     include/vision_ai.h
 )
@@ -186,6 +187,7 @@ set(VISION_SOURCES
     src/user_behavior.cpp
     src/web_search.cpp
     src/gpu_setup_wizard.cpp
+    src/model_downloader_wizard.cpp
     src/ui_automation.cpp
     src/vision_ai.cpp
 )
@@ -210,6 +212,16 @@ endif()
 # ============================================================
 qt_add_executable(VISION_AI WIN32 ${VISION_SOURCES} ${VISION_HEADERS})
 
+# ui_automation.h starts with "ui_" which tricks Qt's AutoUic into
+# looking for a non-existent "automation.ui" form file.
+set_source_files_properties(
+    include/ui_automation.h
+    src/ui_automation.cpp
+    src/action_executor.cpp
+    src/window_manager.cpp
+    PROPERTIES SKIP_AUTOUIC ON
+)
+
 target_include_directories(VISION_AI PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
@@ -220,6 +232,7 @@ target_include_directories(VISION_AI PRIVATE
 target_link_libraries(VISION_AI PRIVATE
     Qt6::Widgets
     Qt6::Core
+    Qt6::Network
     nlohmann_json
 )
 
