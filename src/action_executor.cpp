@@ -43,9 +43,16 @@ static UIAutomation& getUIAuto() {
 
 ActionExecutor::ActionExecutor(VisionAI& app) : app_(app) {
     initActionMap();
+#ifdef VISION_HAS_OCR
+    initOCR();  // FIX B1: Init Tesseract ONCE (not per-call)
+#endif
 }
 
-ActionExecutor::~ActionExecutor() = default;
+ActionExecutor::~ActionExecutor() {
+#ifdef VISION_HAS_OCR
+    shutdownOCR();
+#endif
+}
 
 bool ActionExecutor::isOCRAvailable() {
 #ifdef VISION_HAS_OCR
@@ -169,28 +176,55 @@ cv::Mat ActionExecutor::preprocessForOCR(const cv::Mat& screenshot) {
     return processed;
 }
 
-OCRResult ActionExecutor::runOCR(const cv::Mat& screenshot, bool preprocess) {
-    OCRResult result;
-    
-    cv::Mat img = preprocess ? preprocessForOCR(screenshot) : screenshot;
-    
+// FIX B1: Persistent OCR engine — init once, reuse per call
+void ActionExecutor::initOCR() {
     auto* api = new tesseract::TessBaseAPI();
     if (api->Init(nullptr, "eng") != 0) {
-        LOG_ERROR("Tesseract init failed");
+        LOG_ERROR("Tesseract init failed — OCR disabled");
         delete api;
+        return;
+    }
+    ocr_engine_ = api;
+    ocr_initialized_ = true;
+    LOG_INFO("Tesseract OCR engine initialized (persistent singleton)");
+}
+
+void ActionExecutor::shutdownOCR() {
+    if (ocr_engine_) {
+        auto* api = static_cast<tesseract::TessBaseAPI*>(ocr_engine_);
+        api->End();
+        delete api;
+        ocr_engine_ = nullptr;
+        ocr_initialized_ = false;
+        LOG_INFO("Tesseract OCR engine shut down");
+    }
+}
+
+OCRResult ActionExecutor::runOCR(const cv::Mat& screenshot, bool preprocess) {
+    OCRResult result;
+
+    // FIX B1: Lock mutex — Tesseract is NOT thread-safe
+    std::lock_guard<std::mutex> lock(ocr_mutex_);
+
+    if (!ocr_initialized_ || !ocr_engine_) {
+        LOG_ERROR("OCR engine not initialized");
         return result;
     }
-    
+
+    auto* api = static_cast<tesseract::TessBaseAPI*>(ocr_engine_);
+    cv::Mat img = preprocess ? preprocessForOCR(screenshot) : screenshot;
+
+    // Reuse engine: just SetImage + GetUTF8Text (no Init/End per call)
     api->SetImage(img.data, img.cols, img.rows,
                    img.channels(), (int)img.step);
-    
+
     char* text = api->GetUTF8Text();
     if (text) {
         result.full_text = text;
         result.valid = true;
         delete[] text;
     }
-    
+
     // Get word-level bounding boxes
     auto* ri = api->GetIterator();
     if (ri) {
@@ -209,12 +243,12 @@ OCRResult ActionExecutor::runOCR(const cv::Mat& screenshot, bool preprocess) {
                 delete[] word;
             }
         } while (ri->Next(tesseract::RIL_WORD));
-        delete ri;  // L4 fix: free the ResultIterator
+        delete ri;
     }
-    
-    api->End();
-    delete api;
-    
+
+    // Clear image data for next call (keeps engine alive)
+    api->Clear();
+
     return result;
 }
 #endif

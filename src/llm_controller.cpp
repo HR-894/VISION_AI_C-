@@ -141,10 +141,13 @@ std::string LLMController::generateResponse(const std::string& prompt) {
         return "";
     }
 
+    // FIX B5: Use canonical cache key (strips volatile parts from ReAct prompts)
+    std::string cache_key = canonicalCacheKey(prompt);
+
     // Check cache (inline to avoid nested lock on cache_mutex_)
     {
         std::lock_guard<std::mutex> clock(cache_mutex_);
-        auto it = cache_.find(prompt);
+        auto it = cache_.find(cache_key);
         if (it != cache_.end()) {
             auto elapsed = std::chrono::steady_clock::now() - it->second.time;
             if (elapsed < std::chrono::seconds(cache_ttl_seconds_)) {
@@ -159,7 +162,7 @@ std::string LLMController::generateResponse(const std::string& prompt) {
 
     if (!result.empty()) {
         std::lock_guard<std::mutex> clock(cache_mutex_);
-        cache_[prompt] = {result, std::chrono::steady_clock::now()};
+        cache_[cache_key] = {result, std::chrono::steady_clock::now()};
 
         // FIX: O(1) eviction instead of O(n) scan
         if (cache_.size() > 100) {
@@ -463,6 +466,60 @@ std::string LLMController::formatHistory(const std::vector<json>& history) {
 
 size_t LLMController::hashPrompt(const std::string& prompt) const {
     return std::hash<std::string>{}(prompt);
+}
+
+// FIX B5: Canonical cache key — strips volatile parts from ReAct prompts
+// ReAct prompts contain timestamps, observations (active window title),
+// and scratchpad (Thought/Action/Observation loops) that change every call.
+// Only the semantic core (user goal + tool list) should form the cache key.
+std::string LLMController::canonicalCacheKey(const std::string& prompt) const {
+    std::string key = prompt;
+
+    // 1. Strip timestamps (ISO-8601: 2026-03-07T01:06:07, Unix: 1741299967)
+    //    Pattern: YYYY-MM-DDTHH:MM:SS or 10-digit numbers
+    std::string result;
+    result.reserve(key.size());
+    for (size_t i = 0; i < key.size(); i++) {
+        // Skip 10+ digit sequences (Unix timestamps)
+        if (std::isdigit(key[i])) {
+            size_t j = i;
+            while (j < key.size() && std::isdigit(key[j])) j++;
+            if (j - i >= 10) { i = j - 1; continue; }  // Skip the timestamp
+        }
+        // Skip ISO datetime patterns (YYYY-MM-DD)
+        if (i + 9 < key.size() && std::isdigit(key[i]) &&
+            std::isdigit(key[i+1]) && std::isdigit(key[i+2]) && std::isdigit(key[i+3]) &&
+            key[i+4] == '-') {
+            i += 9;  // Skip past YYYY-MM-DD
+            if (i + 1 < key.size() && key[i+1] == 'T') i += 9;  // Skip THH:MM:SS too
+            continue;
+        }
+        result += key[i];
+    }
+
+    // 2. Strip Observation/Scratchpad blocks ("Observation: ..." to next "Thought:" or end)
+    //    These contain live window titles, process lists, etc.
+    size_t obs_pos = result.find("Observation:");
+    while (obs_pos != std::string::npos) {
+        size_t next_thought = result.find("Thought:", obs_pos);
+        if (next_thought != std::string::npos) {
+            result.erase(obs_pos, next_thought - obs_pos);
+        } else {
+            result.erase(obs_pos);  // Erase to end
+        }
+        obs_pos = result.find("Observation:", obs_pos);
+    }
+
+    // 3. Strip "Active window: ..." lines
+    size_t aw_pos = result.find("Active window:");
+    while (aw_pos != std::string::npos) {
+        size_t eol = result.find('\n', aw_pos);
+        if (eol != std::string::npos) result.erase(aw_pos, eol - aw_pos + 1);
+        else result.erase(aw_pos);
+        aw_pos = result.find("Active window:", aw_pos);
+    }
+
+    return result;
 }
 
 // ═══════════════════ Response Cache ═══════════════════════════════

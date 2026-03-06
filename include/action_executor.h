@@ -13,6 +13,7 @@
 #include <utility>
 #include <unordered_map>
 #include <functional>
+#include <mutex>
 #include <nlohmann/json.hpp>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -85,6 +86,15 @@ private:
     cv::Mat captureScreen(std::optional<RECT> region = std::nullopt);
     cv::Mat preprocessForOCR(const cv::Mat& screenshot);
     OCRResult runOCR(const cv::Mat& screenshot, bool preprocess = true);
+
+    // FIX B1: Persistent Tesseract instance (init once, reuse per call)
+    // Tesseract Init() loads ~20-50MB language models from disk — doing it
+    // per-call causes Resource Thrashing. Singleton eliminates this.
+    void* ocr_engine_ = nullptr;  // tesseract::TessBaseAPI* (opaque to avoid header)
+    bool ocr_initialized_ = false;
+    std::mutex ocr_mutex_;        // Tesseract is NOT thread-safe
+    void initOCR();
+    void shutdownOCR();
 #endif
 
     // ── Action registration ──────────────────────────────────────

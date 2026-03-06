@@ -172,6 +172,7 @@ private:
     nlohmann::json validateAndFill(nlohmann::json parsed);
     std::string formatHistory(const std::vector<nlohmann::json>& history);
     size_t hashPrompt(const std::string& prompt) const;
+    std::string canonicalCacheKey(const std::string& prompt) const;  // B5: semantic cache
 
     // ── Cache helpers ───────────────────────────────────────────
     std::optional<std::string> getCachedResponse(const std::string& prompt);

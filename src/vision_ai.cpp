@@ -153,23 +153,74 @@ VisionAI::VisionAI(QWidget* parent)
 }
 
 VisionAI::~VisionAI() {
-    // Wait for model loading thread to finish
-    if (model_load_thread_.joinable()) {
-        model_load_thread_.join();
-    }
-    // Wait for command processing thread to finish
-    if (cmd_thread_.joinable()) {
-        cmd_thread_.join();
-    }
-#ifdef VISION_HAS_WHISPER
-    // Wait for audio processing thread to finish
-    if (audio_thread_.joinable()) {
-        audio_thread_.join();
+    // ═══ FIX B6: GRACEFUL SHUTDOWN ═══════════════════════════════
+    // STEP 1: Signal ALL background threads to stop IMMEDIATELY.
+    // This MUST be the first line — prevents use-after-free when
+    // background threads try to access destroyed members.
+    is_shutting_down_ = true;
+
+    // STEP 2: Cancel any in-flight Groq API curl request.
+    // Without this, the cmd_thread_ could be stuck in curl_easy_perform()
+    // for up to 30 seconds, making the app "Not Responding" on close.
+#ifdef VISION_HAS_LLM
+    if (llm_controller_) {
+        // Cancel cloud generation — triggers curl's progress callback to abort
+        llm_controller_->cancelGeneration();
     }
 #endif
+
+    // STEP 3: Join all background threads.
+    // Use a helper lambda with timeout to avoid infinite hangs.
+    auto timedJoin = [](std::thread& t, int timeout_ms) {
+        if (!t.joinable()) return;
+        // We can't do timed-join on std::thread natively,
+        // so we try join() and trust that our cancel signals above
+        // have unblocked the threads. If a thread is truly stuck,
+        // detach it as a last resort (better than hanging the app).
+        std::atomic<bool> done{false};
+        std::thread waiter([&]() { t.join(); done = true; });
+        auto start = std::chrono::steady_clock::now();
+        while (!done.load()) {
+            if (std::chrono::steady_clock::now() - start > std::chrono::milliseconds(timeout_ms)) {
+                waiter.detach();  // Give up waiting — thread is stuck
+                t.detach();       // Prevent std::terminate on destroyed joinable thread
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        if (waiter.joinable()) waiter.join();
+    };
+
+    timedJoin(model_load_thread_, 5000);  // Model loading: 5s max
+    timedJoin(cmd_thread_, 3000);          // Command processing: 3s max
+
+#ifdef VISION_HAS_WHISPER
+    if (audio_capture_) audio_capture_->stop();  // Stop mic stream
+    timedJoin(audio_thread_, 2000);
+#endif
+
+    // STEP 4: Unregister hotkeys
     if (hotkey_registered_) {
         UnregisterHotKey((HWND)winId(), hotkey_id_);
     }
+    if (kill_switch_registered_) {
+        UnregisterHotKey((HWND)winId(), kill_switch_id_);
+    }
+
+    // STEP 5: Destroy AI subsystems in reverse dependency order
+    // (pointers are destroyed here explicitly before stack members)
+#ifdef VISION_HAS_LLM
+    react_agent_.reset();
+    action_executor_.reset();
+    llm_controller_.reset();  // Shuts down backends, frees VRAM
+#endif
+#ifdef VISION_HAS_WHISPER
+    audio_capture_.reset();
+    whisper_engine_.reset();
+#endif
+    // Stack members (router_, template_matcher_, etc.) destroyed by
+    // compiler-generated destructor in reverse declaration order.
+    // ═══════════════════════════════════════════════════════════════
 }
 
 // ═══════════════════ UI Setup ═══════════════════
@@ -410,6 +461,8 @@ void VisionAI::onSendCommand() {
         cmd_thread_.detach();  // Let old task finish in background
     }
     cmd_thread_ = std::thread([this, command]() {
+        // FIX B6: Check shutdown flag before touching any member
+        if (is_shutting_down_.load()) return;
         emit statusReady("Processing...", "#FFD700");
         
         // 1. Try fast complex handler FIRST ("open X and type/search Y")

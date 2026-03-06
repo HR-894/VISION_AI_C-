@@ -173,6 +173,11 @@ private:
     std::thread model_load_thread_;  // Joined in destructor (C3 fix)
     std::thread cmd_thread_;          // Command processing thread (no longer detached)
 
+    // FIX B6: Graceful shutdown flag — ALL background threads must check
+    // this before accessing `this` or any member pointers.
+    // Set FIRST in destructor, before joining any threads.
+    std::atomic<bool> is_shutting_down_{false};
+
     // ── Setup methods ────────────────────────────────────────────
     void setupUI();
     void setupTrayIcon();
