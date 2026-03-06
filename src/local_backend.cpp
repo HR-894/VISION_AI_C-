@@ -32,6 +32,34 @@ namespace fs = std::filesystem;
 
 namespace vision {
 
+// ── RAII guard for llama_batch — ensures batch is ALWAYS freed ────
+// This prevents memory leaks on every early-return, break, or exception
+struct ScopedBatch {
+    llama_batch batch;
+    bool active = false;
+    
+    ScopedBatch(int n_tokens, int embd, int n_seq_max) {
+#ifdef VISION_HAS_LLM
+        batch = llama_batch_init(n_tokens, embd, n_seq_max);
+        batch.n_tokens = 0;
+        active = true;
+#else
+        (void)n_tokens; (void)embd; (void)n_seq_max;
+        batch = {};
+#endif
+    }
+    
+    ~ScopedBatch() {
+#ifdef VISION_HAS_LLM
+        if (active) llama_batch_free(batch);
+#endif
+    }
+    
+    // Non-copyable
+    ScopedBatch(const ScopedBatch&) = delete;
+    ScopedBatch& operator=(const ScopedBatch&) = delete;
+};
+
 // ═══════════════════ Constructor / Destructor ═══════════════════════
 
 LocalBackend::LocalBackend(const std::string& model_path)
@@ -95,8 +123,14 @@ void LocalBackend::shutdown() {
     std::lock_guard<std::recursive_mutex> lock(llm_mutex_);
     if (ctx_) { llama_free(ctx_); ctx_ = nullptr; }
     if (model_) { llama_model_free(model_); model_ = nullptr; }
+    if (loaded_) {
+        // BUG FIX: llama_backend_init() was called in initialize()
+        // but never matched — this frees internal llama.cpp state
+        // (thread pools, memory pools, CUDA/Vulkan contexts)
+        llama_backend_free();
+    }
     loaded_ = false;
-    LOG_INFO("LocalBackend: VRAM/RAM released — model unloaded");
+    LOG_INFO("LocalBackend: VRAM/RAM released — model + backend freed");
 #endif
 }
 
@@ -146,9 +180,13 @@ std::string LocalBackend::generate(const std::string& prompt,
     // Clear stale KV cache
     llama_memory_clear(llama_get_memory(ctx_), true);
 
-    // Create batch and decode
-    llama_batch batch = llama_batch_init(context_size_, 0, 1);
-    batch.n_tokens = 0;
+    // ── RAII Batch: guaranteed cleanup on ALL exit paths ──
+    // BUG FIX: Previously, if llama_decode() failed mid-loop (line 255),
+    // the break statement would skip llama_batch_free() → heap leak.
+    // ScopedBatch destructor ALWAYS calls llama_batch_free().
+    ScopedBatch sb(context_size_, 0, 1);
+    auto& batch = sb.batch;
+
     llama_seq_id seq_ids[] = {0};
     for (int i = 0; i < n_tokens; i++) {
         batch.token   [batch.n_tokens] = tokens[i];
@@ -161,8 +199,7 @@ std::string LocalBackend::generate(const std::string& prompt,
 
     if (llama_decode(ctx_, batch) != 0) {
         LOG_ERROR("LocalBackend: Decode failed (initial prompt)");
-        llama_batch_free(batch);
-        return "";
+        return "";  // ScopedBatch destructor frees batch automatically
     }
 
     // Generate tokens
@@ -173,7 +210,7 @@ std::string LocalBackend::generate(const std::string& prompt,
         // ── Emergency Stop check ──
         if (cancel_generation_.load()) {
             LOG_WARN("LocalBackend: Generation cancelled (emergency stop)");
-            break;
+            break;  // ScopedBatch handles cleanup
         }
 
         auto* logits = llama_get_logits_ith(ctx_, -1);
@@ -252,10 +289,10 @@ std::string LocalBackend::generate(const std::string& prompt,
         batch.n_tokens++;
         n_cur++;
 
-        if (llama_decode(ctx_, batch) != 0) break;
+        if (llama_decode(ctx_, batch) != 0) break;  // ScopedBatch handles cleanup
     }
 
-    llama_batch_free(batch);
+    // ScopedBatch destructor frees batch here — guaranteed on all paths
     cancel_generation_ = false;
 
     return result;
@@ -290,10 +327,11 @@ std::vector<float> LocalBackend::getEmbeddings(const std::string& text) {
         n_tokens = 256;
     }
 
-    // Build batch — seq_id=1 to avoid corrupting main chat KV cache
-    llama_batch batch = llama_batch_init(context_size_, 0, 1);
-    batch.n_tokens = 0;
-    llama_seq_id seq_ids[] = {1};
+    // ── RAII Batch: guaranteed cleanup even if decode throws ──
+    ScopedBatch sb(context_size_, 0, 1);
+    auto& batch = sb.batch;
+
+    llama_seq_id seq_ids[] = {1};  // seq_id=1 to avoid corrupting main chat KV cache
     for (int i = 0; i < n_tokens; i++) {
         batch.token   [batch.n_tokens] = tokens[i];
         batch.pos     [batch.n_tokens] = i;
@@ -323,7 +361,7 @@ std::vector<float> LocalBackend::getEmbeddings(const std::string& text) {
         }
     }
 
-    llama_batch_free(batch);
+    // ScopedBatch destructor frees batch automatically
 
     // Clean up embedding sequence from KV cache
     llama_memory_seq_rm(llama_get_memory(ctx_), 1, -1, -1);
