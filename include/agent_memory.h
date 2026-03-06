@@ -75,6 +75,7 @@ private:
 
     void load();
     void save();
+    void save_impl();  // Unlocked save helper — shared by save() and autoSave()
     void autoSave();
 };
 

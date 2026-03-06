@@ -431,6 +431,8 @@ std::pair<bool, std::string> ActionExecutor::actionReadScreen(const json& params
 
 std::pair<bool, std::string> ActionExecutor::actionWait(const json& params) {
     int ms = params.value("ms", params.value("seconds", 1) * 1000);
+    // FIX L6: Clamp to 30s max — LLM could output wait(999999) and block forever
+    ms = std::clamp(ms, 0, 30000);
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
     return {true, "Waited " + std::to_string(ms) + "ms"};
 }

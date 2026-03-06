@@ -123,8 +123,11 @@ public:
     /// Clear the entire conversation history
     void clearConversation();
 
-    /// Get the current conversation history (read-only)
-    const std::vector<Message>& getConversation() const { return conversation_; }
+    /// Get the current conversation history (thread-safe copy)
+    std::vector<Message> getConversation() const {
+        std::lock_guard<std::recursive_mutex> lock(llm_mutex_);
+        return conversation_;
+    }
 
     // ── Cloud-specific configuration ─────────────────────────────
     void setCloudApiKey(const std::string& key);
@@ -159,6 +162,9 @@ private:
     std::unordered_map<std::string, CacheEntry> cache_;
     mutable std::mutex cache_mutex_;
     int cache_ttl_seconds_ = 60;
+
+    // ── Async generation tracking ────────────────────────────────
+    std::future<std::string> async_future_;  // Track outstanding async work
 
     // ── Internal helpers (shared across backends) ────────────────
     std::string generateResponse(const std::string& prompt);

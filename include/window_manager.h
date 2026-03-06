@@ -43,6 +43,11 @@ struct MonitorInfo {
 class WindowManager {
 public:
     WindowManager();
+    ~WindowManager();
+
+    // Non-copyable (GDI+ token ownership)
+    WindowManager(const WindowManager&) = delete;
+    WindowManager& operator=(const WindowManager&) = delete;
 
     // ── Window queries ───────────────────────────────────────────
     std::string getActiveWindowTitle();
@@ -109,6 +114,9 @@ private:
 
     /// Send a single key input event
     void sendKeyInput(WORD vk, bool key_up);
+
+    /// GDI+ token for RAII screenshot support (init once, shutdown once)
+    unsigned long long gdiplusToken_ = 0;
 };
 
 } // namespace vision

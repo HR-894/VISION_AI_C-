@@ -47,12 +47,32 @@ public:
     BackendType type() const override { return BackendType::Cloud; }
     std::string info() const override;
 
-    // ── Cloud-specific configuration ─────────────────────────────
-    void setModel(const std::string& model) { model_ = model; }
-    void setTemperature(float temp) { temperature_ = temp; }
-    void setMaxTokens(int tokens) { max_tokens_ = tokens; }
-    void setApiKey(const std::string& key) { api_key_ = key; }
-    void setEndpoint(const std::string& url) { endpoint_ = url; }
+    // ── Cloud-specific configuration (thread-safe) ───────────────
+    void setModel(const std::string& model) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        model_ = model;
+    }
+    void setTemperature(float temp) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        temperature_ = temp;
+    }
+    void setMaxTokens(int tokens) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        max_tokens_ = tokens;
+    }
+    void setApiKey(const std::string& key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // Securely overwrite old key before replacing
+        if (!api_key_.empty()) {
+            volatile char* p = &api_key_[0];
+            for (size_t i = 0; i < api_key_.size(); ++i) p[i] = 0;
+        }
+        api_key_ = key;
+    }
+    void setEndpoint(const std::string& url) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        endpoint_ = url;
+    }
 
 private:
 #ifdef VISION_HAS_CLOUD

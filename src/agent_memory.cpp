@@ -146,6 +146,12 @@ void AgentMemory::load() {
 
 void AgentMemory::save() {
     std::lock_guard lock(mutex_);
+    save_impl();
+}
+
+// FIX L7: Shared unlocked save implementation — prevents deadlock
+// Both save() and autoSave() use this without double-locking
+void AgentMemory::save_impl() {
     try {
         fs::create_directories(fs::path(file_path_).parent_path());
 
@@ -351,26 +357,11 @@ json AgentMemory::getStats() const {
 void AgentMemory::autoSave() {
     auto now = std::chrono::steady_clock::now();
     if (dirty_ && (now - last_save_ > std::chrono::seconds(30))) {
-        // Save without re-locking (called from locked context)
-        try {
-            fs::create_directories(fs::path(file_path_).parent_path());
-
-            std::string plaintext = memory_.dump(2);
-            auto encrypted = dpapi_encrypt(plaintext);
-
-            if (!encrypted.empty()) {
-                std::ofstream f(file_path_, std::ios::binary);
-                f.write(reinterpret_cast<char*>(encrypted.data()),
-                        static_cast<std::streamsize>(encrypted.size()));
-            } else {
-                // Fallback
-                std::ofstream f(file_path_);
-                f << plaintext;
-            }
-
-            dirty_ = false;
-            last_save_ = now;
-        } catch (...) {}
+        // FIX L7: Reuse save_impl() instead of duplicated code
+        // (called from locked context — no re-lock needed)
+        save_impl();
+        dirty_ = false;
+        last_save_ = now;
     }
 }
 

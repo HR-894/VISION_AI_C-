@@ -104,6 +104,7 @@ public:
 private:
     // Timer state
     std::vector<std::thread> timer_threads_;
+    std::atomic<bool> app_closing_{false};  // Signal threads to exit early
     
     // Stopwatch state
     std::atomic<bool> stopwatch_running_{false};

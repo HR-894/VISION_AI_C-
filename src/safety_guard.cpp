@@ -108,7 +108,16 @@ std::string SafetyGuard::normalizePath(const std::string& path) const {
         if (p.is_relative()) {
             p = fs::absolute(p);
         }
-        std::string normalized = p.lexically_normal().string();
+        // FIX S3: Resolve symlinks/junctions to prevent path traversal bypass
+        // An attacker could create a junction: Downloads\escape -> C:\Windows\System32
+        // canonical() resolves all symlinks to the real target path
+        std::string normalized;
+        if (fs::exists(p)) {
+            normalized = fs::canonical(p).string();
+        } else {
+            // Path doesn't exist yet (new file) — use lexically_normal as fallback
+            normalized = p.lexically_normal().string();
+        }
         // Uppercase drive letter
         if (normalized.size() >= 2 && normalized[1] == ':') {
             normalized[0] = static_cast<char>(std::toupper(normalized[0]));

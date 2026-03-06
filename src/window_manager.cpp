@@ -134,7 +134,18 @@ const std::unordered_map<std::string, std::vector<std::string>> WindowManager::A
 // ═══════════════════ Constructor ═══════════════════
 
 WindowManager::WindowManager() {
-    LOG_INFO("WindowManager initialized");
+    // Initialize GDI+ ONCE at construction (not per-screenshot)
+    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+    Gdiplus::GdiplusStartup(reinterpret_cast<ULONG_PTR*>(&gdiplusToken_), &gdiplusStartupInput, nullptr);
+    LOG_INFO("WindowManager initialized (GDI+ ready)");
+}
+
+WindowManager::~WindowManager() {
+    // Shutdown GDI+ ONCE at destruction
+    if (gdiplusToken_) {
+        Gdiplus::GdiplusShutdown(static_cast<ULONG_PTR>(gdiplusToken_));
+        gdiplusToken_ = 0;
+    }
 }
 
 // ═══════════════════ Window Queries ═══════════════════
@@ -296,10 +307,7 @@ void WindowManager::showDesktop() {
 // ═══════════════════ Screenshot (PNG via GDI+) ═══════════════════
 
 std::string WindowManager::takeScreenshot(const std::string& save_path) {
-    // Initialize GDI+
-    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
-    ULONG_PTR gdiplusToken;
-    Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr);
+    // GDI+ is already initialized in the constructor
 
     // Get FULL virtual screen (all monitors, DPI-aware)
     int screenX = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -386,19 +394,26 @@ std::string WindowManager::takeScreenshot(const std::string& save_path) {
         result_msg = "ERROR: Failed to create GDI+ Bitmap from HBITMAP";
     }
 
-    // Cleanup GDI
+    // Cleanup GDI objects (but NOT GdiplusShutdown — that's in the destructor)
     DeleteObject(bmp);
     DeleteDC(memDC);
     ReleaseDC(nullptr, screenDC);
-    Gdiplus::GdiplusShutdown(gdiplusToken);
 
     return result_msg;
 }
 
 // ═══════════════════ Volume (Core Audio COM) ═══════════════════
 
-static IAudioEndpointVolume* getEndpointVolume() {
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+// FIX C5: RAII COM scope for volume operations (prevents CoInit/Uninit mismatch)
+struct VolumeComScope {
+    HRESULT hr;
+    VolumeComScope() { hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED); }
+    ~VolumeComScope() { if (SUCCEEDED(hr) || hr == S_FALSE) CoUninitialize(); }
+    bool ok() const { return SUCCEEDED(hr) || hr == S_FALSE; }
+};
+
+static IAudioEndpointVolume* getEndpointVolume(VolumeComScope& com) {
+    if (!com.ok()) return nullptr;
 
     IMMDeviceEnumerator* deviceEnumerator = nullptr;
     HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
@@ -421,12 +436,12 @@ static IAudioEndpointVolume* getEndpointVolume() {
 }
 
 void WindowManager::setVolume(int level) {
-    auto* vol = getEndpointVolume();
+    VolumeComScope com;  // RAII: CoUninitialize always called
+    auto* vol = getEndpointVolume(com);
     if (!vol) return;
     float normalized = std::clamp(level, 0, 100) / 100.0f;
     vol->SetMasterVolumeLevelScalar(normalized, nullptr);
     vol->Release();
-    CoUninitialize();
 }
 
 void WindowManager::volumeUp() {
@@ -440,22 +455,22 @@ void WindowManager::volumeDown() {
 }
 
 void WindowManager::muteToggle() {
-    auto* vol = getEndpointVolume();
+    VolumeComScope com;
+    auto* vol = getEndpointVolume(com);
     if (!vol) return;
     BOOL muted = FALSE;
     vol->GetMute(&muted);
     vol->SetMute(!muted, nullptr);
     vol->Release();
-    CoUninitialize();
 }
 
 int WindowManager::getVolume() {
-    auto* vol = getEndpointVolume();
+    VolumeComScope com;
+    auto* vol = getEndpointVolume(com);
     if (!vol) return 50;
     float level = 0.0f;
     vol->GetMasterVolumeLevelScalar(&level);
     vol->Release();
-    CoUninitialize();
     return (int)(level * 100.0f);
 }
 
@@ -619,8 +634,9 @@ void WindowManager::scrollPage(const std::string& direction, int amount) {
     input.mi.dwFlags = MOUSEEVENTF_WHEEL;
 
     std::string dir = toLowerStr(direction);
-    input.mi.mouseData = (dir == "up") ? (DWORD)(WHEEL_DELTA * amount)
-                                        : (DWORD)(-WHEEL_DELTA * amount);
+    // FIX L5: Use signed arithmetic to avoid DWORD wrapping on negative values
+    int delta = (dir == "up") ? (WHEEL_DELTA * amount) : (-WHEEL_DELTA * amount);
+    input.mi.mouseData = static_cast<DWORD>(delta);
     SendInput(1, &input, sizeof(INPUT));
 }
 
@@ -696,7 +712,9 @@ bool WindowManager::waitForInputReady(HWND hwnd, float timeout) {
         }
 
         // Method 2: Fallback to UI Automation keyboard focus check
-        static UIAutomation uia_checker;
+        // FIX B2: Use function-scoped pointer instead of static to avoid
+        // COM destruction after main() exit
+        UIAutomation uia_checker;
         if (uia_checker.isAvailable()) {
             auto elem = uia_checker.findElement("");  // Any focused element
             // Even if findElement returns nothing, the fact that UIA is responsive

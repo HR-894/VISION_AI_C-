@@ -16,6 +16,7 @@
 
 #include <cstdlib>
 #include <sstream>
+#include <mutex>
 
 #ifdef VISION_HAS_SPDLOG
 #include <spdlog/spdlog.h>
@@ -52,8 +53,11 @@ bool CloudBackend::initialize() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (initialized_) return true;
 
-    // Global curl init (safe to call multiple times)
-    curl_global_init(CURL_GLOBAL_DEFAULT);
+    // Global curl init — must only happen ONCE per process (thread-safe)
+    static std::once_flag curl_once;
+    std::call_once(curl_once, []() {
+        curl_global_init(CURL_GLOBAL_DEFAULT);
+    });
 
     curl_ = curl_easy_init();
     if (!curl_) {

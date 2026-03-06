@@ -404,8 +404,11 @@ void VisionAI::onSendCommand() {
     // Track behavior
     behavior_.recordCommand(command, context_mgr_.getActiveApp().name);
     
-    // Process in background thread (join previous if still running)
-    if (cmd_thread_.joinable()) cmd_thread_.join();
+    // FIX C6: Don't block the UI thread with join() — if an LLM call takes
+    // 30+ seconds, the entire GUI would freeze. Instead, detach old thread.
+    if (cmd_thread_.joinable()) {
+        cmd_thread_.detach();  // Let old task finish in background
+    }
     cmd_thread_ = std::thread([this, command]() {
         emit statusReady("Processing...", "#FFD700");
         

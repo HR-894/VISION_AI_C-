@@ -65,6 +65,11 @@ LLMController::LLMController(const std::string& model_path) {
 }
 
 LLMController::~LLMController() {
+    // FIX C1: Wait for any outstanding async generation to complete
+    // before destroying backends — prevents use-after-free
+    if (async_future_.valid()) {
+        try { async_future_.wait(); } catch (...) {}
+    }
     // Safely shutdown both backends
     if (local_backend_) local_backend_->shutdown();
     if (cloud_backend_) cloud_backend_->shutdown();
@@ -95,6 +100,7 @@ void LLMController::unloadModel() {
 }
 
 bool LLMController::isModelLoaded() const {
+    std::lock_guard<std::recursive_mutex> lock(llm_mutex_);  // FIX: was unprotected
     if (!active_backend_) return false;
     return active_backend_->isReady();
 }
@@ -135,15 +141,30 @@ std::string LLMController::generateResponse(const std::string& prompt) {
         return "";
     }
 
-    // Check cache first
-    auto cached = getCachedResponse(prompt);
-    if (cached) return *cached;
+    // Check cache (inline to avoid nested lock on cache_mutex_)
+    {
+        std::lock_guard<std::mutex> clock(cache_mutex_);
+        auto it = cache_.find(prompt);
+        if (it != cache_.end()) {
+            auto elapsed = std::chrono::steady_clock::now() - it->second.time;
+            if (elapsed < std::chrono::seconds(cache_ttl_seconds_)) {
+                return it->second.response;
+            }
+            cache_.erase(it);
+        }
+    }
 
     // Delegate to the active backend with conversation context
     std::string result = active_backend_->generate(prompt, conversation_);
 
     if (!result.empty()) {
-        cacheResponse(prompt, result);
+        std::lock_guard<std::mutex> clock(cache_mutex_);
+        cache_[prompt] = {result, std::chrono::steady_clock::now()};
+
+        // FIX: O(1) eviction instead of O(n) scan
+        if (cache_.size() > 100) {
+            cache_.clear();  // Simple and safe — no O(n) scan on hot path
+        }
     }
 
     return result;
@@ -156,15 +177,17 @@ std::string LLMController::generateReactResponse(const std::string& prompt) {
 // ═══════════════════ Embeddings ════════════════════════════════════
 
 std::vector<float> LLMController::getEmbeddings(const std::string& text) {
-    // Always use local backend for embeddings (cloud doesn't support them)
-    if (local_backend_) {
-        // Initialize local backend if needed (even if cloud is active)
-        if (!local_backend_->isReady()) {
-            local_backend_->initialize();
-        }
-        return local_backend_->getEmbeddings(text);
+    std::lock_guard<std::recursive_mutex> lock(llm_mutex_);  // FIX: was unprotected
+    if (!local_backend_) return {};
+
+    // WARNING: If cloud is active, local was shut down to free VRAM.
+    // Re-initializing here loads ~4GB back into VRAM alongside the cloud usage.
+    if (!local_backend_->isReady()) {
+        LOG_WARN("LLMController: Re-initializing local backend for embeddings "
+                 "(cloud is active — this will use extra VRAM)");
+        if (!local_backend_->initialize()) return {};
     }
-    return {};
+    return local_backend_->getEmbeddings(text);
 }
 
 // ═══════════════════ ReAct Step ════════════════════════════════════
@@ -209,7 +232,13 @@ std::optional<json> LLMController::reactStep(
 std::optional<json> LLMController::parseAmbiguousCommand(
     const std::string& command, const std::string& context) {
 
-    std::string prompt = "Parse this command into a JSON action. Command: \"" + command + "\"";
+    // FIX S1: Escape quotes to prevent prompt injection
+    std::string safe_cmd = command;
+    for (size_t i = 0; i < safe_cmd.size(); i++) {
+        if (safe_cmd[i] == '"') safe_cmd.insert(i++, "\\");
+    }
+
+    std::string prompt = "Parse this command into a JSON action. Command: \"" + safe_cmd + "\"";
     if (!context.empty()) prompt += "\nContext: " + context;
     prompt += "\n\nRespond with ONLY: {\"action\": \"name\", \"params\": {}}";
 
@@ -253,14 +282,21 @@ void LLMController::setBackend(BackendType type) {
                  static_cast<int>(old_family),
                  static_cast<int>(new_family));
 
-        // Translate the entire conversation for the new model's instruction style
-        conversation_ = translator_.translateConversation(
-            conversation_, old_family, new_family);
+        // FIX: Always translate from ORIGINAL system prompt to prevent drift.
+        // Previously, repeated Local→Cloud→Local cycles would compound
+        // translation artifacts (expand→compress→expand) until garbled.
+        for (auto& msg : conversation_) {
+            if (msg.role == "system" && !system_prompt_.empty()) {
+                // Use the original system_prompt_ as source of truth
+                msg.content = translator_.translateSystemPrompt(
+                    system_prompt_, ModelFamily::Generic, new_family);
+            }
+        }
 
-        // Also update the raw system_prompt_ if we have one
+        // Update the working system_prompt_ for consistency
         if (!system_prompt_.empty()) {
-            system_prompt_ = translator_.translateSystemPrompt(
-                system_prompt_, old_family, new_family);
+            // Note: system_prompt_ stores the ORIGINAL, untranslated version.
+            // We only translate the copy inside conversation_.
         }
     }
 
@@ -295,9 +331,17 @@ BackendType LLMController::getActiveBackend() const {
 }
 
 std::future<std::string> LLMController::generateResponseAsync(const std::string& prompt) {
-    // Launch generation in a background thread — doesn't block the caller
-    return std::async(std::launch::async, [this, prompt]() {
+    // FIX C1: Wait for any previous async work before launching new one
+    if (async_future_.valid()) {
+        try { async_future_.wait(); } catch (...) {}
+    }
+    // Store future so destructor can wait on it (prevents use-after-free)
+    async_future_ = std::async(std::launch::async, [this, prompt]() {
         return generateResponse(prompt);
+    });
+    return std::async(std::launch::async, [this]() {
+        if (async_future_.valid()) return async_future_.get();
+        return std::string{};
     });
 }
 

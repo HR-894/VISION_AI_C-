@@ -190,10 +190,16 @@ json ReActAgent::fallbackThink(const std::string& cmd) {
     }
     
     if (lower.find("search") != std::string::npos || lower.find("google") != std::string::npos) {
+        // FIX L4: Use keyword length instead of hardcoded 7
+        std::string keyword;
         auto pos = lower.find("search ");
-        if (pos == std::string::npos) pos = lower.find("google ");
+        if (pos != std::string::npos) { keyword = "search "; }
+        else {
+            pos = lower.find("google ");
+            if (pos != std::string::npos) { keyword = "google "; }
+        }
         if (pos != std::string::npos) {
-            std::string query = cmd.substr(pos + 7);
+            std::string query = cmd.substr(pos + keyword.size());
             return {{"thought", "Fallback: web search"},
                     {"action", "search_web"},
                     {"params", {{"query", query}}}};
