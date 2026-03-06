@@ -23,6 +23,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # ============================================================
 option(VISION_ENABLE_WHISPER  "Enable whisper.cpp speech-to-text"  ON)
 option(VISION_ENABLE_LLM      "Enable llama.cpp LLM inference"     ON)
+option(VISION_ENABLE_CLOUD    "Enable Groq Cloud inference (libcurl)" ON)
 option(VISION_ENABLE_OCR      "Enable Tesseract OCR"               ON)
 option(VISION_ENABLE_AUDIO    "Enable PortAudio capture"           ON)
 option(VISION_BUILD_TESTS     "Build unit tests"                   OFF)
@@ -149,6 +150,19 @@ else()
 endif()
 
 # ============================================================
+# Dependencies — libcurl (for Groq Cloud Backend)
+# ============================================================
+if(VISION_ENABLE_CLOUD)
+    find_package(CURL QUIET)
+    if(NOT CURL_FOUND)
+        message(WARNING "libcurl not found — Groq Cloud inference disabled (install via vcpkg: vcpkg install curl:x64-windows)")
+        set(VISION_ENABLE_CLOUD OFF)
+    else()
+        message(STATUS "✓ libcurl found → enabling Groq Cloud backend")
+    endif()
+endif()
+
+# ============================================================
 # Source files
 # ============================================================
 set(VISION_HEADERS
@@ -199,8 +213,23 @@ if(VISION_ENABLE_WHISPER)
 endif()
 
 if(VISION_ENABLE_LLM)
-    list(APPEND VISION_HEADERS include/llm_controller.h include/react_agent.h include/action_executor.h)
-    list(APPEND VISION_SOURCES src/llm_controller.cpp src/react_agent.cpp src/action_executor.cpp)
+    list(APPEND VISION_HEADERS
+        include/ai_backend.h
+        include/local_backend.h
+        include/cloud_backend.h
+        include/instruction_translator.h
+        include/llm_controller.h
+        include/react_agent.h
+        include/action_executor.h
+    )
+    list(APPEND VISION_SOURCES
+        src/local_backend.cpp
+        src/cloud_backend.cpp
+        src/instruction_translator.cpp
+        src/llm_controller.cpp
+        src/react_agent.cpp
+        src/action_executor.cpp
+    )
 endif()
 
 if(VISION_ENABLE_OCR)
@@ -255,6 +284,12 @@ endif()
 if(VISION_ENABLE_LLM)
     target_link_libraries(VISION_AI PRIVATE llama)
     target_compile_definitions(VISION_AI PRIVATE VISION_HAS_LLM=1)
+endif()
+
+# libcurl (Groq Cloud Backend)
+if(VISION_ENABLE_CLOUD)
+    target_link_libraries(VISION_AI PRIVATE CURL::libcurl)
+    target_compile_definitions(VISION_AI PRIVATE VISION_HAS_CLOUD=1)
 endif()
 
 # whisper.cpp
@@ -348,7 +383,8 @@ install(DIRECTORY images/ DESTINATION bin/images OPTIONAL)
 
 message(STATUS "============================================")
 message(STATUS "  VISION AI v${PROJECT_VERSION}")
-message(STATUS "  LLM:     ${VISION_ENABLE_LLM}")
+message(STATUS "  LLM:      ${VISION_ENABLE_LLM}")
+message(STATUS "  Cloud:    ${VISION_ENABLE_CLOUD}")
 message(STATUS "  Whisper:  ${VISION_ENABLE_WHISPER}")
 message(STATUS "  OCR:      ${VISION_ENABLE_OCR}")
 message(STATUS "  Audio:    ${VISION_ENABLE_AUDIO}")

@@ -1,11 +1,16 @@
 #pragma once
 /**
  * @file llm_controller.h
- * @brief LLM inference via llama.cpp C API
+ * @brief Dual-Inference Engine Orchestrator
  *
- * Handles ReAct reasoning steps, one-shot command parsing,
- * response caching, robust JSON parsing, embeddings, idle auto-unload,
- * KV cache shifting, and emergency generation cancellation.
+ * Manages two AI backends: CloudBackend (Groq REST API via libcurl)
+ * and LocalBackend (llama.cpp GGUF). Handles backend switching with
+ * context persistence (std::vector<Message>), async execution
+ * (std::future), response caching, JSON parsing, and memory-safe
+ * cleanup on backend transitions.
+ *
+ * PUBLIC API IS BACKWARD COMPATIBLE — all existing consumers
+ * (ReActAgent, AgentMemory, VisionAI) work without changes.
  */
 
 #include <string>
@@ -17,12 +22,18 @@
 #include <thread>
 #include <random>
 #include <atomic>
+#include <future>
+#include <memory>
 #include <nlohmann/json.hpp>
 
-#ifdef VISION_HAS_LLM
-struct llama_model;
-struct llama_context;
-#endif
+#include "ai_backend.h"
+#include "instruction_translator.h"
+
+// Forward declarations for backend classes
+namespace vision {
+class LocalBackend;
+class CloudBackend;
+}
 
 namespace vision {
 
@@ -35,16 +46,18 @@ public:
     LLMController(const LLMController&) = delete;
     LLMController& operator=(const LLMController&) = delete;
 
+    // ═══════════════════ Original Public API (unchanged) ═══════════
+
     /// Check if llama.cpp is available (compiled in)
     static bool isAvailable();
 
-    /// Load GGUF model (lazy)
+    /// Load model on active backend (lazy)
     bool loadModel();
 
     /// Unload model to free VRAM/RAM
     void unloadModel();
 
-    /// Check if model is loaded
+    /// Check if active backend is loaded/ready
     bool isModelLoaded() const;
 
     /// Single ReAct iteration: given task, observation, history → next action
@@ -61,54 +74,84 @@ public:
     /// Generate raw response for the ReAct prompt
     std::string generateReactResponse(const std::string& prompt);
 
-    /// Get text embeddings (lightweight vector memory)
+    /// Get text embeddings (always uses LocalBackend)
     std::vector<float> getEmbeddings(const std::string& text);
 
-    /// Get model info string
+    /// Get model/backend info string
     std::string getModelInfo() const;
 
-    /// Set GPU layers (for dynamic adjustment)
-    void setGPULayers(int layers) { gpu_layers_ = layers; }
+    /// Set GPU layers (for local backend)
+    void setGPULayers(int layers);
 
-    /// Set context size
-    void setContextSize(int size) { context_size_ = size; }
+    /// Set context size (for local backend)
+    void setContextSize(int size);
 
-    /// Set thread count
-    void setThreadCount(int count) { thread_count_ = count; }
+    /// Set thread count (for local backend)
+    void setThreadCount(int count);
 
     // ── Emergency Stop ──────────────────────────────────────────
     /// Cancel any ongoing generation immediately
-    void cancelGeneration() { cancel_generation_ = true; }
+    void cancelGeneration();
 
-    /// Reset cancel flag (called after cancel is handled)
-    void resetCancel() { cancel_generation_ = false; }
+    /// Reset cancel flag
+    void resetCancel();
 
-    /// Check idle timer and auto-unload if idle too long
+    /// Check idle timer and auto-unload (local backend only)
     void checkIdleUnload();
 
+    // ═══════════════════ NEW Dual-Engine API ═══════════════════════
+
+    /// Switch the active inference backend
+    /// Safely shuts down the old backend (frees VRAM/RAM) before initializing new one
+    void setBackend(BackendType type);
+
+    /// Get the currently active backend type
+    BackendType getActiveBackend() const;
+
+    /// Async generation — returns a future that doesn't block the caller
+    std::future<std::string> generateResponseAsync(const std::string& prompt);
+
+    /// Add a user message to the persistent conversation
+    void addUserMessage(const std::string& content);
+
+    /// Add an assistant message to the persistent conversation
+    void addAssistantMessage(const std::string& content);
+
+    /// Set the system prompt (replaces any existing system message)
+    void setSystemPrompt(const std::string& prompt);
+
+    /// Clear the entire conversation history
+    void clearConversation();
+
+    /// Get the current conversation history (read-only)
+    const std::vector<Message>& getConversation() const { return conversation_; }
+
+    // ── Cloud-specific configuration ─────────────────────────────
+    void setCloudApiKey(const std::string& key);
+    void setCloudModel(const std::string& model);
+    void setCloudEndpoint(const std::string& url);
+
 private:
-#ifdef VISION_HAS_LLM
-    llama_model* model_ = nullptr;
-    llama_context* ctx_ = nullptr;
-#endif
-    std::string model_path_;
-    bool loaded_ = false;
-    int gpu_layers_ = 0;
-    int context_size_ = 2048;
-    int thread_count_ = std::max(1, (int)std::thread::hardware_concurrency() / 2);
-    float temperature_ = 0.1f;
-    float top_p_ = 0.9f;
-    int max_tokens_ = 512;
-    int timeout_seconds_ = 30;
+    // ── Dual backends ────────────────────────────────────────────
+    std::unique_ptr<LocalBackend> local_backend_;
+    std::unique_ptr<CloudBackend> cloud_backend_;
+    IAIBackend* active_backend_ = nullptr;  // Points to one of the above
+    BackendType active_type_ = BackendType::Local;
 
-    // ── Emergency cancel ────────────────────────────────────────
-    std::atomic<bool> cancel_generation_{false};
+    // ── Instruction Translator ───────────────────────────────────
+    InstructionTranslator translator_;
+    ModelFamily local_model_family_ = ModelFamily::Qwen;    // Default: Qwen GGUF
+    ModelFamily cloud_model_family_ = ModelFamily::Llama3;  // Default: Groq Llama-3
+    ModelFamily active_family_ = ModelFamily::Qwen;
 
-    // ── Idle auto-unload ────────────────────────────────────────
-    std::chrono::steady_clock::time_point last_activity_;
-    static constexpr int IDLE_TIMEOUT_SECONDS = 300;  // 5 minutes
+    // ── Context persistence ──────────────────────────────────────
+    std::vector<Message> conversation_;
+    std::string system_prompt_;
 
-    // ── Response cache ──────────────────────────────────────────
+    // ── Thread safety ────────────────────────────────────────────
+    mutable std::recursive_mutex llm_mutex_;
+
+    // ── Response cache ───────────────────────────────────────────
     struct CacheEntry {
         std::string response;
         std::chrono::steady_clock::time_point time;
@@ -117,14 +160,12 @@ private:
     mutable std::mutex cache_mutex_;
     int cache_ttl_seconds_ = 60;
 
-    // ── Internal helpers ────────────────────────────────────────
+    // ── Internal helpers (shared across backends) ────────────────
     std::string generateResponse(const std::string& prompt);
     nlohmann::json parseJsonStrict(const std::string& text);
     nlohmann::json validateAndFill(nlohmann::json parsed);
     std::string formatHistory(const std::vector<nlohmann::json>& history);
     size_t hashPrompt(const std::string& prompt) const;
-    std::string findModelPath() const;
-    void touchActivity();
 
     // ── Cache helpers ───────────────────────────────────────────
     std::optional<std::string> getCachedResponse(const std::string& prompt);

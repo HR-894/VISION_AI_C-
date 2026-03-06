@@ -45,7 +45,7 @@ Built from the ground up in **C++20** with **Qt6**, VISION AI is engineered to r
 
 VISION AI runs LLM inference and speech recognition **entirely on your hardware** — no API keys, no internet, no compromise.
 
-- **LLM Inference** — Powered by [`llama.cpp`](https://github.com/ggerganov/llama.cpp) with GGUF quantized models. Full reasoning, planning, and code generation without a cloud in sight.
+- **LLM Inference** — Powered by a **Dual-Inference Engine**: [`llama.cpp`](https://github.com/ggerganov/llama.cpp) for offline GGUF model inference + **Groq Cloud API** (via `libcurl`) for blazing-fast cloud inference when online. Switch backends at runtime — your conversation context is preserved and auto-translated for each model.
 - **Instant Voice Transcription** — Integrated [`whisper.cpp`](https://github.com/ggerganov/whisper.cpp) converts speech to text in real-time, on-device. Just press `Ctrl+Win` and speak.
 
 ---
@@ -125,6 +125,68 @@ Models are stored locally in the `models/` directory next to the executable. No 
 
 ---
 
+## ☁️ Cloud Inference (Optional — Groq API)
+
+VISION AI ships with a **Dual-Inference Engine** — it works 100% offline by default, but you can optionally enable **Groq Cloud** for ultra-fast inference using models like `llama-3.3-70b-versatile`.
+
+### Step 1: Get Your Free API Key
+
+1. Go to [**console.groq.com**](https://console.groq.com)
+2. Sign up (free) and navigate to **API Keys**
+3. Click **Create API Key** and copy it
+
+### Step 2: Set the Environment Variable
+
+**Windows (PowerShell — permanent):**
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("GROQ_API_KEY", "gsk_YOUR_KEY_HERE", "User")
+```
+
+**Windows (CMD — session only):**
+
+```cmd
+set GROQ_API_KEY=gsk_YOUR_KEY_HERE
+```
+
+**Or set via Windows GUI:**
+> Settings → System → About → Advanced system settings → Environment Variables → New → `GROQ_API_KEY`
+
+### Step 3: Enable Cloud Backend in Code
+
+```cpp
+// Switch to cloud inference at any point
+llm_controller_->setBackend(BackendType::Cloud);
+
+// Switch back to local (frees cloud resources)
+llm_controller_->setBackend(BackendType::Local);
+```
+
+### Step 4: Build with Cloud Support
+
+```bash
+# Cloud enabled (requires libcurl — install via vcpkg)
+vcpkg install curl:x64-windows
+cmake -B build -DVISION_ENABLE_CLOUD=ON
+cmake --build build --config Release
+```
+
+> **📝 Note:** If `libcurl` is not installed, `VISION_ENABLE_CLOUD` automatically turns `OFF` and everything works in offline-only mode — no errors.
+
+### How It Works
+
+| Feature | Local (Default) | Cloud (Groq) |
+|---------|----------------|---------------|
+| **Model** | Any GGUF (Qwen, Phi, etc.) | Llama-3.3-70b, Mixtral, etc. |
+| **Speed** | Depends on your hardware | ~500 tokens/sec (Groq LPU) |
+| **Privacy** | 100% offline | API calls to Groq servers |
+| **Cost** | Free | Free tier available |
+| **Internet** | Not required | Required |
+
+The **Instruction Translator** automatically adapts your system prompts when switching between models (e.g., Qwen's concise format ↔ Llama-3's verbose format) so you get optimal instruction-following regardless of which engine is active.
+
+---
+
 ## 🛠️ Build from Source
 
 ### Prerequisites
@@ -162,7 +224,8 @@ cmake --build build --config Release --parallel
 
 | Option | Default | Description |
 |---|---|---|
-| `VISION_ENABLE_LLM` | `ON` | Enable llama.cpp LLM inference |
+| `VISION_ENABLE_LLM` | `ON` | Enable llama.cpp local LLM inference |
+| `VISION_ENABLE_CLOUD` | `ON` | Enable Groq Cloud inference via libcurl |
 | `VISION_ENABLE_WHISPER` | `ON` | Enable whisper.cpp speech-to-text |
 | `VISION_ENABLE_OCR` | `ON` | Enable Tesseract OCR |
 | `VISION_ENABLE_AUDIO` | `ON` | Enable PortAudio microphone capture |
@@ -179,6 +242,7 @@ VISION AI v3.0.0
 ├── Language        C++20 (MSVC /std:c++20)
 ├── UI Framework    Qt 6 (Widgets, Core)
 ├── LLM Engine      llama.cpp (GGUF models, CUDA/Vulkan/CPU)
+├── Cloud Engine    Groq REST API (libcurl, Llama-3/Mixtral)
 ├── Speech-to-Text  whisper.cpp (ggml models)
 ├── OCR             Tesseract 5 + OpenCV 4
 ├── Audio Capture   PortAudio 19
@@ -196,7 +260,10 @@ VISION AI v3.0.0
 | Module | File | Role |
 |---|---|---|
 | **Core App** | `vision_ai.cpp` | Main application orchestrator & Qt UI |
-| **LLM Controller** | `llm_controller.cpp` | llama.cpp model loading, inference, context management |
+| **LLM Controller** | `llm_controller.cpp` | Dual-inference orchestrator — backend switching, async, context persistence |
+| **Local Backend** | `local_backend.cpp` | llama.cpp GGUF model loading, tokenization, sampling, embeddings |
+| **Cloud Backend** | `cloud_backend.cpp` | Groq REST API via libcurl — JSON request/response |
+| **Instruction Translator** | `instruction_translator.cpp` | Model-aware prompt optimization on backend switch |
 | **ReAct Agent** | `react_agent.cpp` | Reason-Act loop for multi-step task execution |
 | **Action Executor** | `action_executor.cpp` | Translates agent decisions into OS actions |
 | **Whisper Engine** | `whisper_engine.cpp` | Real-time speech-to-text pipeline |
