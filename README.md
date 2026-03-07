@@ -1,105 +1,185 @@
 <p align="center">
-  <img src="images/vision_ai_logo.png" alt="VISION AI Logo" width="120" />
+  <img src="assets/icon.png" alt="VISION AI Logo" width="128" />
 </p>
 
 <h1 align="center">VISION AI</h1>
 
 <p align="center">
-  <strong>The Ultimate Offline-First, Privacy-Focused Windows AI Copilot — Built in Modern C++.</strong>
+  <strong>Your PC's Brain — An All-Rounder AI Agent + Chat Assistant Built in Native C++</strong>
 </p>
 
 <p align="center">
   <a href="#-download--install"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows"></a>
   <a href="#-build-from-source"><img src="https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&logo=cplusplus&logoColor=white" alt="C++20"></a>
   <a href="#-architecture--tech-stack"><img src="https://img.shields.io/badge/Qt-6-41CD52?style=for-the-badge&logo=qt&logoColor=white" alt="Qt6"></a>
-  <a href="#-core-features"><img src="https://img.shields.io/badge/100%25-Offline-FF6F00?style=for-the-badge&logo=wifi-off&logoColor=white" alt="Offline"></a>
+  <a href="#-core-features"><img src="https://img.shields.io/badge/llama.cpp-GGUF-FF6F00?style=for-the-badge" alt="llama.cpp"></a>
+  <a href="#%EF%B8%8F-cloud-inference-optional--groq-api"><img src="https://img.shields.io/badge/Groq-Cloud%20API-8B5CF6?style=for-the-badge" alt="Groq"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-A31F34?style=for-the-badge" alt="License"></a>
 </p>
 
 <p align="center">
-  <em>Zero cloud. Zero latency. Zero data leaves your machine — ever.</em>
+  <em>Chat naturally. Execute OS tasks. Control your entire desktop — with voice or text. 100% offline-capable.</em>
 </p>
 
 ---
 
-## 📖 Overview
+## 🎬 What is VISION AI?
 
-**VISION AI** is a native Windows desktop application that acts as an autonomous AI copilot for your PC. It reads your screen, understands your intent via voice or text, and executes complex, multi-step workflows — all **entirely offline**, with **zero data transmission**, and at **native C++ speed**.
+**VISION AI** is a native **Windows desktop AI agent** that combines the intelligence of a chatbot with the power of a system automation tool. Think of it as **ChatGPT + Windows Copilot** — but running **completely on your machine**, with **native C++ speed**, and **zero data leaving your PC**.
 
-Unlike cloud-dependent copilots that stream your keystrokes, screenshots, and voice to remote servers:
+```
+You: "Hey, what is machine learning?"
+VISION AI: "Machine learning is a subset of AI where computers learn patterns
+            from data without being explicitly programmed..."
+
+You: "Open Chrome and search for latest AI news"
+VISION AI: ✅ Opened Chrome → Typed "latest AI news" → Pressed Enter
+
+You: "Take a screenshot"
+VISION AI: 📸 Screenshot saved to Desktop/screenshot_2026-03-07.png
+
+You: "Set volume to 50%"  
+VISION AI: 🔊 Volume set to 50%
+```
+
+### The Difference
 
 | | Cloud Copilots | **VISION AI** |
 |---|---|---|
-| **Privacy** | Your data on someone else's server | 🔒 Everything stays on your machine |
+| **Privacy** | Your data on someone's server | 🔒 Everything stays on your machine |
 | **Latency** | Network round-trip per request | ⚡ Instant — native CPU/GPU inference |
-| **Availability** | Requires internet connection | 🌐 Works on airplane mode |
-| **Cost** | Monthly subscription fees | 💰 Free & open-source, forever |
-
-Built from the ground up in **C++20** with **Qt6**, VISION AI is engineered to run beautifully on hardware as modest as **8 GB RAM** while scaling up to leverage **RTX GPUs** for maximum throughput.
+| **Chat** | ✅ Can chat | ✅ Can chat **+ execute OS tasks** |
+| **Availability** | Requires internet | 🌐 Works on airplane mode |
+| **Cost** | Monthly subscription | 💰 Free & open-source, forever |
+| **Agent** | Limited to browser | 🖥️ Controls your **entire desktop** |
 
 ---
 
 ## ✨ Core Features
 
-### 🧠 True Offline AI Processing
+### 🧠 Dual-Mode AI: Chat + Agent
 
-VISION AI runs LLM inference and speech recognition **entirely on your hardware** — no API keys, no internet, no compromise.
+VISION AI uses a **smart intent detection** system. Every message goes through the AI, which decides:
 
-- **LLM Inference** — Powered by a **Dual-Inference Engine**: [`llama.cpp`](https://github.com/ggerganov/llama.cpp) for offline GGUF model inference + **Groq Cloud API** (via `libcurl`) for blazing-fast cloud inference when online. Switch backends at runtime — your conversation context is preserved and auto-translated for each model.
-- **Instant Voice Transcription** — Integrated [`whisper.cpp`](https://github.com/ggerganov/whisper.cpp) converts speech to text in real-time, on-device. Just press `Ctrl+Win` and speak.
+- **Is this a conversation?** → Responds naturally (like ChatGPT)
+- **Is this a command?** → Executes it on your OS (like a real assistant)
 
----
+The AI understands **English, Hindi, and Hinglish** — it automatically matches your language.
 
-### ⚙️ Hardware-Aware Optimization
+```
+You: "Kya haal hai?"
+VISION AI: "Mein theek hoon! Batao, kya madad chahiye? 😊"
 
-A built-in **`DeviceProfiler`** fingerprints your system at startup and dynamically tunes every performance knob:
-
-| System Tier | RAM | GPU | Context Window | CPU Threads |
-|---|---|---|---|---|
-| 🟡 Low-End | 8 GB | Integrated | 2,048 tokens | Auto (conservative) |
-| 🟢 Mid-Range | 16 GB | GTX 1650+ | 4,096 tokens | Auto (balanced) |
-| 🔵 High-End | 32 GB+ | RTX 4050+ | 8,192 tokens | Auto (max) |
-
-- **Dynamic Context Window Sizing** — Automatically scales the LLM context between 2K–8K tokens based on available memory.
-- **Dynamic CPU Thread Allocation** — Detects physical cores, respects thermal headroom, and assigns threads proportionally.
-- **GPU Auto-Detection** — Build system auto-selects the fastest backend: **CUDA** → **Vulkan** → **CPU** fallback.
+You: "Notepad kholo"
+VISION AI: ✅ Opened Notepad
+```
 
 ---
 
-### 🖥️ OS-Level UI Automation
+### 🔀 Dual-Inference Engine
 
-VISION AI doesn't just "see" your screen — it **understands** it.
+Two AI backends, seamlessly switchable at runtime:
 
-- **Microsoft UI Automation (UIA)** — Reads the live accessibility tree of any application to identify buttons, text fields, menus, and more. Clicks and interacts with elements by semantic name — no brittle coordinate hacking.
-- **Tesseract OCR Fallback** — When an app lacks accessibility metadata (e.g., legacy Win32 apps, games), VISION AI falls back to **Tesseract OCR** + **OpenCV** template matching to visually locate UI elements.
+| Feature | 🏠 Local (Default) | ☁️ Cloud (Groq) |
+|---------|:-:|:-:|
+| **Engine** | llama.cpp (GGUF) | Groq REST API (libcurl) |
+| **Models** | Llama 1B, Phi-3, Qwen, etc. | Llama-3.3-70B, Mixtral |
+| **Speed** | Hardware-dependent | ~500 tokens/sec (Groq LPU) |
+| **Privacy** | 100% offline | API calls to Groq |
+| **Internet** | Not required | Required |
+| **Cost** | Free | Free tier available |
+
+**Context Persistence:** When you switch backends mid-conversation, your chat history is preserved and auto-translated for the new model family.
 
 ---
 
-### ⌨️ Smart Input Simulation
+### 🎤 Voice Control
 
-Typing text into other applications sounds trivial — until the OS swallows characters because the target thread isn't ready.
+Press **`Ctrl+Alt+Space`** and speak. VISION AI converts speech to text using [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — all on-device, no internet needed.
 
-- **Win32 GUI Thread Caret Tracking** — Monitors the caret state of the target window's GUI thread to detect exactly when it's safe to inject the next keystroke.
-- **"Smart Wait" Algorithm** — Adaptively pauses between keystrokes based on real-time thread responsiveness, ensuring **zero dropped characters** even in heavy applications.
+- Real-time transcription
+- Supports multiple languages
+- Works as both voice input for commands AND dictation
+
+---
+
+### 🖥️ OS-Level Automation
+
+VISION AI doesn't just "see" your screen — it **understands and controls it**:
+
+| Capability | Technology | What It Does |
+|---|---|---|
+| **UI Automation** | Microsoft UIA (COM) | Reads accessibility tree — clicks buttons, reads text, fills forms by semantic name |
+| **OCR Fallback** | Tesseract 5 + OpenCV 4 | Visually reads text from legacy apps, games, or apps without accessibility support |
+| **Screen Observer** | DXGI Desktop Duplication | Captures screen changes using perceptual hashing (pHash) — detects what changed |
+| **Smart Input** | Win32 SendInput + Caret Tracking | Types text with zero dropped characters — monitors the target thread's readiness |
+| **Window Control** | Win32 API | Open, close, minimize, maximize, focus, list, and arrange windows |
+| **System Control** | Win32 + WMI | Volume, brightness, app launching, power management |
+
+---
+
+### 🧩 Smart Command Pipeline
+
+Every user message flows through an optimized 4-stage pipeline:
+
+```
+User Input
+    │
+    ├─→ Stage 1: Fast Complex Handler (~0ms)
+    │   "open edge and search Microsoft rewards" → instant compound execution
+    │
+    ├─→ Stage 2: Chained Commands (~0ms per step)
+    │   "open notepad then take screenshot" → sequential execution
+    │
+    ├─→ Stage 3: Template Matcher (~0ms)
+    │   "open notepad" / "screenshot" / "set volume 50" → instant pattern match
+    │
+    └─→ Stage 4: AI Agent (ReAct Loop)
+        "What is AI?" / "Help me organize my desktop" → AI decides & acts
+        │
+        ├─→ Safety Gate: "delete system32" → ⛔ Requires confirmation
+        └─→ AI Response: chat reply OR OS action (1-step fast-exit for chat)
+```
+
+Simple known commands execute **instantly** (~0ms). Complex or conversational inputs go to the AI agent. Chat replies complete in **1 step** — no unnecessary ReAct loop iterations.
 
 ---
 
 ### 🗄️ Semantic Vector Memory
 
-VISION AI remembers your past tasks and learns your patterns — without a single external database.
+VISION AI remembers your past tasks and learns your patterns — without any external database:
 
-- **Pure C++ Cosine Similarity** — Computes vector similarity directly from LLM logits to find relevant past interactions, eliminating the need for bloated vector-database dependencies (no ChromaDB, no Pinecone).
-- **Behavioral Learning** — Tracks user command patterns in memory to suggest faster, more contextual actions over time.
+- **Pure C++ Cosine Similarity** — Computes vector similarity from LLM embeddings
+- **Encrypted Persistence** — Memory files encrypted with **Windows DPAPI**
+- **Behavioral Learning** — Tracks patterns for faster, more contextual actions
 
 ---
 
 ### 🛡️ Military-Grade Privacy
 
-Your data never leaves your machine, and even **local storage is hardened**:
+| Protection | How |
+|---|---|
+| **Encryption at Rest** | DPAPI (Windows Data Protection API) — tied to your Windows credentials |
+| **API Key Security** | DPAPI-encrypted, auto-restored on startup, secure memory wipe on close |
+| **File Whitelisting** | `SafetyGuard` blocks AI from accessing files outside explicit whitelist |
+| **Dangerous Command Block** | Confidence Scorer blocks `format`, `delete`, `kill`, `system32` etc. |
+| **Zero Telemetry** | No analytics, no crash reports, no network calls. `netstat` confirms: silent |
 
-- **DPAPI Encryption at Rest** — Agent memory files and user behavior JSONs are encrypted using [Windows Data Protection API (DPAPI)](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/), tied to your Windows user credentials.
-- **Strict File Whitelisting** — A `SafetyGuard` subsystem prevents the AI from accessing, modifying, or deleting any file not on an explicit whitelist. Blocks dangerous hallucinations before they become dangerous actions.
-- **No Telemetry** — Zero analytics, zero crash reports, zero network calls. `netstat` will confirm: VISION AI is silent on the wire.
+---
+
+### ⚙️ Hardware-Aware Optimization
+
+A built-in **`DeviceProfiler`** fingerprints your system at startup:
+
+| System Tier | RAM | GPU | Context Window | Threads |
+|---|---|---|---|---|
+| 🟡 Low-End | 8 GB | Integrated | 2,048 tokens | Auto (conservative) |
+| 🟢 Mid-Range | 16 GB | GTX 1650+ | 4,096 tokens | Auto (balanced) |
+| 🔵 High-End | 32 GB+ | RTX 4050+ | 8,192 tokens | Auto (max) |
+
+- **GPU Auto-Detection** — **CUDA** → **Vulkan** → **CPU** fallback
+- **Idle Auto-Unload** — LLM auto-unloads after 5 minutes of inactivity to free RAM/VRAM
+- **Dynamic Context Sizing** — Scales 2K–8K tokens based on available memory
 
 ---
 
@@ -107,83 +187,40 @@ Your data never leaves your machine, and even **local storage is hardened**:
 
 ### Pre-Built Release (Recommended)
 
-1. Go to the [**Releases**](../../releases) tab.
-2. Download the latest `VISION_AI_vX.X.X_Setup.exe` or the portable `.zip`.
-3. Run the installer or extract the archive.
-4. Launch `VISION_AI.exe`.
+1. Go to the [**Releases**](../../releases) tab
+2. Download `VISION_AI_vX.X.X_Setup.exe` or the portable `.zip`
+3. Launch `VISION_AI.exe`
+4. The **Model Downloader Wizard** will auto-detect your hardware and download the right model
 
-### Automatic Model Downloader
+### First-Run Experience
 
-On first launch, VISION AI will detect that no AI models are present and offer to download them automatically:
+On first launch, VISION AI guides you through:
 
-- **LLM Model** — A quantized GGUF model (e.g., `Phi-3-mini-Q4_K_M.gguf`) optimized for your hardware tier.
-- **Whisper Model** — A compact `ggml-base.en.bin` for fast English speech recognition.
+1. **🖥️ GPU Setup Wizard** — Detects your GPU and selects the optimal backend (CUDA/Vulkan/CPU)
+2. **📦 Model Downloader** — Downloads a hardware-appropriate LLM model automatically
+3. **⚙️ Settings** — Set your Groq API key (optional), choose engine mode (Local/Cloud/Hybrid)
 
-Models are stored locally in the `models/` directory next to the executable. No account required, no sign-up — just click **Download** and you're ready.
-
-> **💡 Tip:** You can also manually place any GGUF-compatible model into the `models/` folder. VISION AI will auto-detect and use it.
+> **💡 Tip:** You can also manually place any `.gguf` model into the `models/` folder.
 
 ---
 
 ## ☁️ Cloud Inference (Optional — Groq API)
 
-VISION AI ships with a **Dual-Inference Engine** — it works 100% offline by default, but you can optionally enable **Groq Cloud** for ultra-fast inference using models like `llama-3.3-70b-versatile`.
+### Setup (2 Minutes)
 
-### Step 1: Get Your Free API Key
+1. Get a **free** API key from [console.groq.com](https://console.groq.com)
+2. Open VISION AI → Click ⚙️ Settings → Paste your API key
+3. Select **Cloud** or **Hybrid** engine mode
+4. Done! Your key is **DPAPI-encrypted** and auto-restored on every startup
 
-1. Go to [**console.groq.com**](https://console.groq.com)
-2. Sign up (free) and navigate to **API Keys**
-3. Click **Create API Key** and copy it
-
-### Step 2: Set the Environment Variable
-
-**Windows (PowerShell — permanent):**
+### Or via Environment Variable
 
 ```powershell
+# PowerShell (permanent)
 [System.Environment]::SetEnvironmentVariable("GROQ_API_KEY", "gsk_YOUR_KEY_HERE", "User")
 ```
 
-**Windows (CMD — session only):**
-
-```cmd
-set GROQ_API_KEY=gsk_YOUR_KEY_HERE
-```
-
-**Or set via Windows GUI:**
-> Settings → System → About → Advanced system settings → Environment Variables → New → `GROQ_API_KEY`
-
-### Step 3: Enable Cloud Backend in Code
-
-```cpp
-// Switch to cloud inference at any point
-llm_controller_->setBackend(BackendType::Cloud);
-
-// Switch back to local (frees cloud resources)
-llm_controller_->setBackend(BackendType::Local);
-```
-
-### Step 4: Build with Cloud Support
-
-```bash
-# Cloud enabled (requires libcurl — install via vcpkg)
-vcpkg install curl:x64-windows
-cmake -B build -DVISION_ENABLE_CLOUD=ON
-cmake --build build --config Release
-```
-
-> **📝 Note:** If `libcurl` is not installed, `VISION_ENABLE_CLOUD` automatically turns `OFF` and everything works in offline-only mode — no errors.
-
-### How It Works
-
-| Feature | Local (Default) | Cloud (Groq) |
-|---------|----------------|---------------|
-| **Model** | Any GGUF (Qwen, Phi, etc.) | Llama-3.3-70b, Mixtral, etc. |
-| **Speed** | Depends on your hardware | ~500 tokens/sec (Groq LPU) |
-| **Privacy** | 100% offline | API calls to Groq servers |
-| **Cost** | Free | Free tier available |
-| **Internet** | Not required | Required |
-
-The **Instruction Translator** automatically adapts your system prompts when switching between models (e.g., Qwen's concise format ↔ Llama-3's verbose format) so you get optimal instruction-following regardless of which engine is active.
+The **Instruction Translator** automatically adapts prompts when switching between model families (Qwen ↔ Llama-3 ↔ Phi-3) for optimal instruction-following.
 
 ---
 
@@ -196,22 +233,22 @@ The **Instruction Translator** automatically adapts your system prompts when swi
 | **CMake** | ≥ 3.20 | Build system |
 | **MSVC** | VS 2022+ | C++20 compiler |
 | **Qt6** | 6.x | `Widgets`, `Core` modules |
-| **OpenCV** | 4.x | *Optional* — for OCR & template matching |
-| **Tesseract** | 5.x | *Optional* — OCR fallback engine |
+| **OpenCV** | 4.x | *Optional* — OCR & template matching |
+| **Tesseract** | 5.x | *Optional* — OCR fallback |
 | **PortAudio** | 19.x | *Optional* — microphone capture |
-| **CUDA Toolkit** | 12.x | *Optional* — NVIDIA GPU acceleration |
-| **Vulkan SDK** | 1.3+ | *Optional* — AMD/Intel GPU acceleration |
+| **libcurl** | 8.x | *Optional* — Groq Cloud API |
+| **CUDA** | 12.x | *Optional* — NVIDIA GPU |
+| **Vulkan SDK** | 1.3+ | *Optional* — AMD/Intel GPU |
 
 ### Clone & Build
 
 ```bash
-# Clone with submodules (llama.cpp, whisper.cpp, etc.)
+# Clone with submodules (llama.cpp, whisper.cpp, spdlog)
 git clone --recursive https://github.com/HR-894/VISION_AI_C-.git
 cd VISION_AI_C-
 
 # Configure (GPU backend is auto-detected)
-cmake -B build -G "Visual Studio 17 2022" -A x64 \
-  -DCMAKE_PREFIX_PATH="C:/Qt/6.x.x/msvc2022_64"
+cmake -B build -G "Visual Studio 17 2022" -A x64
 
 # Build
 cmake --build build --config Release --parallel
@@ -224,82 +261,118 @@ cmake --build build --config Release --parallel
 
 | Option | Default | Description |
 |---|---|---|
-| `VISION_ENABLE_LLM` | `ON` | Enable llama.cpp local LLM inference |
-| `VISION_ENABLE_CLOUD` | `ON` | Enable Groq Cloud inference via libcurl |
-| `VISION_ENABLE_WHISPER` | `ON` | Enable whisper.cpp speech-to-text |
-| `VISION_ENABLE_OCR` | `ON` | Enable Tesseract OCR |
-| `VISION_ENABLE_AUDIO` | `ON` | Enable PortAudio microphone capture |
-| `VISION_BUILD_TESTS` | `OFF` | Build unit tests |
+| `VISION_ENABLE_LLM` | `ON` | llama.cpp local LLM inference |
+| `VISION_ENABLE_CLOUD` | `ON` | Groq Cloud inference (requires libcurl) |
+| `VISION_ENABLE_WHISPER` | `ON` | whisper.cpp speech-to-text |
+| `VISION_ENABLE_OCR` | `ON` | Tesseract OCR |
+| `VISION_ENABLE_AUDIO` | `ON` | PortAudio microphone capture |
 
-> **GPU Backend** is auto-detected at configure time: **CUDA** (NVIDIA) → **Vulkan** (AMD/Intel/NVIDIA) → **CPU** fallback. No manual flags needed.
+> GPU backend auto-detected: **CUDA** → **Vulkan** → **CPU**. No manual flags needed.
 
 ---
 
-## 🏗️ Architecture & Tech Stack
+## 🏗️ Architecture
 
 ```
-VISION AI v3.0.0
-├── Language        C++20 (MSVC /std:c++20)
-├── UI Framework    Qt 6 (Widgets, Core)
-├── LLM Engine      llama.cpp (GGUF models, CUDA/Vulkan/CPU)
-├── Cloud Engine    Groq REST API (libcurl, Llama-3/Mixtral)
-├── Speech-to-Text  whisper.cpp (ggml models)
-├── OCR             Tesseract 5 + OpenCV 4
-├── Audio Capture   PortAudio 19
-├── JSON            nlohmann/json (header-only)
-├── Logging         spdlog
-├── UI Automation   Microsoft UI Automation (UIA) via COM
-├── Input Sim       Win32 SendInput + GUI Thread Caret Tracking
-├── Encryption      Windows DPAPI (CryptProtectData)
-├── Vector Memory   Pure C++ Cosine Similarity (no external DB)
-└── Build System    CMake 3.20+
+VISION AI v3.0
+├── Language          C++20 (MSVC /std:c++20)
+├── UI Framework      Qt 6 (Widgets, Core, Dark Theme)
+├── LLM Engine        llama.cpp (GGUF, CUDA/Vulkan/CPU)
+├── Cloud Engine      Groq REST API (libcurl)
+├── Speech-to-Text    whisper.cpp (ggml models)
+├── OCR               Tesseract 5 + OpenCV 4
+├── Screen Capture    DXGI Desktop Duplication API
+├── Audio Capture     PortAudio 19
+├── UI Automation     Microsoft UIA (COM)
+├── Input Simulation  Win32 SendInput + GUI Thread Caret
+├── Encryption        Windows DPAPI (CryptProtectData)
+├── Vector Memory     Pure C++ Cosine Similarity
+├── JSON              nlohmann/json (header-only)
+├── Logging           spdlog (rotating file + console)
+└── Build System      CMake 3.20+
 ```
 
-### Module Map
+### Module Map (31 Source Files)
+
+<details>
+<summary>Click to expand full module list</summary>
 
 | Module | File | Role |
 |---|---|---|
-| **Core App** | `vision_ai.cpp` | Main application orchestrator & Qt UI |
-| **LLM Controller** | `llm_controller.cpp` | Dual-inference orchestrator — backend switching, async, context persistence |
-| **Local Backend** | `local_backend.cpp` | llama.cpp GGUF model loading, tokenization, sampling, embeddings |
-| **Cloud Backend** | `cloud_backend.cpp` | Groq REST API via libcurl — JSON request/response |
-| **Instruction Translator** | `instruction_translator.cpp` | Model-aware prompt optimization on backend switch |
-| **ReAct Agent** | `react_agent.cpp` | Reason-Act loop for multi-step task execution |
-| **Action Executor** | `action_executor.cpp` | Translates agent decisions into OS actions |
+| **Core App** | `vision_ai.cpp` | Main orchestrator, Qt UI, command pipeline, system tray |
+| **Chat Widget** | `chat_widget.cpp` | Discord-style chat UI with message bubbles |
+| **LLM Controller** | `llm_controller.cpp` | Dual-inference orchestrator, backend switching, async generation, caching |
+| **Local Backend** | `local_backend.cpp` | llama.cpp GGUF: loading, tokenization, KV cache, sampling, embeddings |
+| **Cloud Backend** | `cloud_backend.cpp` | Groq REST API: JSON request/response, cancellation, streaming |
+| **Instruction Translator** | `instruction_translator.cpp` | Model-family-aware prompt optimization on backend switch |
+| **ReAct Agent** | `react_agent.cpp` | Reason-Act loop: observe → think → act, multi-step execution |
+| **Action Executor** | `action_executor.cpp` | Translates AI decisions into OS actions (chat, open, type, click...) |
+| **Command Router** | `command_router.cpp` | Intent classification & command dispatch |
+| **Fast Complex Handler** | `fast_complex_handler.cpp` | Compound commands: "open X and search Y" |
+| **Template Matcher** | `smart_template_matcher.cpp` | Regex-based pattern matching for known commands |
+| **Confidence Scorer** | `confidence_scorer.cpp` | Deterministic safety scoring & dangerous command blocking |
 | **Whisper Engine** | `whisper_engine.cpp` | Real-time speech-to-text pipeline |
 | **Audio Capture** | `audio_capture.cpp` | PortAudio microphone stream management |
 | **Device Profiler** | `device_profiler.cpp` | Hardware detection & performance tuning |
 | **UI Automation** | `ui_automation.cpp` | Microsoft UIA accessibility tree traversal |
-| **Window Manager** | `window_manager.cpp` | Window enumeration, focus, & input injection |
-| **System Commands** | `system_commands.cpp` | Volume, brightness, app launching, system control |
-| **Command Router** | `command_router.cpp` | Intent classification & command dispatch |
+| **Screen Observer** | `screen_observer.cpp` | DXGI screen capture + pHash change detection |
+| **Window Manager** | `window_manager.cpp` | Window enumeration, focus, minimize, maximize, input injection |
+| **System Commands** | `system_commands.cpp` | Volume, brightness, app launching, power management |
 | **Safety Guard** | `safety_guard.cpp` | File whitelisting & action validation |
 | **Agent Memory** | `agent_memory.cpp` | DPAPI-encrypted semantic memory store |
+| **Vector Memory** | `vector_memory.cpp` | Cosine similarity search, persistent binary storage |
 | **User Behavior** | `user_behavior.cpp` | Behavioral pattern learning & prediction |
-| **Config Manager** | `config_manager.cpp` | Persistent settings & runtime configuration |
+| **Context Manager** | `context_manager.cpp` | Conversation history & active app tracking |
+| **Config Manager** | `config_manager.cpp` | Persistent JSON settings |
 | **File Manager** | `file_manager.cpp` | Safe file operations with sandboxing |
-| **Context Manager** | `context_manager.cpp` | Conversation history & context window management |
-| **GPU Setup Wizard** | `gpu_setup_wizard.cpp` | First-run GPU detection & optimal backend selection |
-| **Template Matcher** | `smart_template_matcher.cpp` | OpenCV-based visual element matching |
+| **Settings Dialog** | `settings_dialog.cpp` | API key input, engine selection, DPAPI encryption |
+| **GPU Setup Wizard** | `gpu_setup_wizard.cpp` | First-run GPU detection dialog |
+| **Model Downloader** | `model_downloader_wizard.cpp` | Auto-download models with progress bar |
 | **Web Search** | `web_search.cpp` | Minimal web search integration |
+| **Main** | `main.cpp` | Entry point, dark theme, COM init, wizard flow |
+
+</details>
+
+---
+
+## ⌨️ Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Alt+Space` | 🎤 Toggle voice input (start/stop recording) |
+| `Ctrl+Esc` | ⛔ Emergency stop — cancel all AI generation |
+| `Enter` | Send message |
+| `Up/Down Arrow` | Navigate command history |
+
+---
+
+## 🗺️ Roadmap
+
+- [x] Dual-inference engine (Local + Cloud)
+- [x] Natural language chat + OS agent
+- [x] Voice input via whisper.cpp
+- [x] Screen observer with OCR
+- [x] DPAPI-encrypted memory
+- [x] Hardware-aware optimization
+- [x] Model downloader wizard
+- [ ] Streaming chat responses (token-by-token display)
+- [ ] Plugin system for custom actions
+- [ ] Multi-monitor support
+- [ ] Linux / macOS port
 
 ---
 
 ## 🤝 Contributing
 
-Contributions are welcome! Whether it's a bug fix, a new feature, or better documentation — we'd love your help.
+Contributions welcome! Bug fixes, features, docs — all appreciated.
 
-1. **Fork** the repository.
+1. **Fork** the repository
 2. **Create** a feature branch: `git checkout -b feat/amazing-feature`
 3. **Commit** your changes: `git commit -m "feat: add amazing feature"`
 4. **Push** to the branch: `git push origin feat/amazing-feature`
-5. **Open** a Pull Request.
+5. **Open** a Pull Request
 
-Please ensure your code:
-
-- Compiles cleanly with `/W4` on MSVC.
-- Follows the existing code style (C++20, `snake_case` for files, `PascalCase` for classes).
-- Includes a clear description of what the change does and why.
+**Code style:** C++20, `snake_case` for files, `PascalCase` for classes, compile clean with `/W4`.
 
 ---
 
@@ -311,5 +384,5 @@ This project is licensed under the **MIT License** — see the [LICENSE](LICENSE
 
 <p align="center">
   <strong>VISION AI</strong> — Your PC. Your Data. Your AI.<br/>
-  <sub>Built with ❤️ in Modern C++</sub>
+  <sub>Built with ❤️ in Modern C++ by <a href="https://github.com/HR-894">HR-894</a></sub>
 </p>
