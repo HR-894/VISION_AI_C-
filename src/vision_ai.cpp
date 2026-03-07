@@ -228,34 +228,49 @@ VisionAI::~VisionAI() {
 void VisionAI::setupUI() {
     setWindowTitle("VISION AI");
     setMinimumSize(700, 500);
-    resize(800, 600);
-    
+    resize(850, 650);
+
+    // ── Global Discord Dark Theme ────────────────────────────────
+    setStyleSheet(
+        "QMainWindow, QWidget { background-color: #1e1f22; color: #dbdee1; }"
+        "QToolTip { background-color: #2b2d31; color: #dbdee1; border: 1px solid #3f3f46; "
+        "  border-radius: 6px; padding: 4px 8px; font-size: 12px; }"
+    );
+
     auto* central = new QWidget(this);
     setCentralWidget(central);
     auto* main_layout = new QVBoxLayout(central);
-    main_layout->setContentsMargins(12, 12, 12, 12);
-    main_layout->setSpacing(8);
+    main_layout->setContentsMargins(14, 14, 14, 14);
+    main_layout->setSpacing(10);
     
     // ── Header ───────────────────────────────────────────────────
     auto* header = new QHBoxLayout();
     auto* title = new QLabel("🔮 VISION AI");
-    title->setStyleSheet("font-size: 22px; font-weight: bold; color: #7B68EE;");
-    
+    title->setStyleSheet(
+        "font-size: 22px; font-weight: bold; color: #5865F2; "
+        "font-family: 'Inter', 'Segoe UI', sans-serif;");
+
     cpu_label_ = new QLabel("CPU: --");
-    cpu_label_->setStyleSheet("color: #888; font-size: 11px;");
+    cpu_label_->setStyleSheet("color: #949ba4; font-size: 11px; font-family: 'Inter', 'Segoe UI';");
     ram_label_ = new QLabel("RAM: --");
-    ram_label_->setStyleSheet("color: #888; font-size: 11px;");
-    
+    ram_label_->setStyleSheet("color: #949ba4; font-size: 11px; font-family: 'Inter', 'Segoe UI';");
+
     auto* settings_btn = new QPushButton("⚙");
-    settings_btn->setFixedSize(32, 32);
-    settings_btn->setStyleSheet("font-size: 16px; border: 1px solid #555; border-radius: 6px;");
+    settings_btn->setFixedSize(34, 34);
+    settings_btn->setStyleSheet(
+        "QPushButton { font-size: 16px; border: 1px solid #3f3f46; border-radius: 8px; "
+        "  background: #2b2d31; color: #dbdee1; }"
+        "QPushButton:hover { background: #3f3f46; border-color: #5865F2; }");
     connect(settings_btn, &QPushButton::clicked, this, &VisionAI::onSettingsClicked);
-    
+
     auto* help_btn = new QPushButton("?");
-    help_btn->setFixedSize(32, 32);
-    help_btn->setStyleSheet("font-size: 16px; border: 1px solid #555; border-radius: 6px;");
+    help_btn->setFixedSize(34, 34);
+    help_btn->setStyleSheet(
+        "QPushButton { font-size: 16px; border: 1px solid #3f3f46; border-radius: 8px; "
+        "  background: #2b2d31; color: #dbdee1; }"
+        "QPushButton:hover { background: #3f3f46; border-color: #5865F2; }");
     connect(help_btn, &QPushButton::clicked, this, &VisionAI::onHelpClicked);
-    
+
     header->addWidget(title);
     header->addStretch();
     header->addWidget(cpu_label_);
@@ -264,13 +279,9 @@ void VisionAI::setupUI() {
     header->addWidget(help_btn);
     main_layout->addLayout(header);
     
-    // ── Chat display ─────────────────────────────────────────────
-    chat_display_ = new QTextEdit();
-    chat_display_->setReadOnly(true);
-    chat_display_->setStyleSheet(
-        "background-color: #1a1a1a; border: 1px solid #333; border-radius: 8px; "
-        "padding: 10px; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px;");
-    main_layout->addWidget(chat_display_, 1);
+    // ── Chat display (QListView + Custom Delegate) ───────────────
+    chat_widget_ = new ChatWidget(this);
+    main_layout->addWidget(chat_widget_, 1);
     
     // ── Quick presets ────────────────────────────────────────────
     auto* presets = new QHBoxLayout();
@@ -284,8 +295,11 @@ void VisionAI::setupUI() {
     for (const auto& [label, cmd] : preset_items) {
         auto* btn = new QPushButton(QString::fromStdString(label));
         btn->setStyleSheet(
-            "background: #2a2a2a; border: 1px solid #444; border-radius: 6px; "
-            "padding: 4px 10px; font-size: 11px; color: #ccc;");
+            "QPushButton { background: #2b2d31; border: 1px solid #3f3f46; border-radius: 8px; "
+            "  padding: 6px 14px; font-size: 11px; color: #dbdee1; "
+            "  font-family: 'Inter', 'Segoe UI'; }"
+            "QPushButton:hover { background: #3f3f46; border-color: #5865F2; color: #fff; }"
+            "QPushButton:pressed { background: #5865F2; }");
         connect(btn, &QPushButton::clicked, [this, c = cmd]() {
             onPresetClicked(QString::fromStdString(c));
         });
@@ -299,24 +313,31 @@ void VisionAI::setupUI() {
     input_field_ = new QLineEdit();
     input_field_->setPlaceholderText("Type a command... (Enter to send, Ctrl+Alt+Space for voice)");
     input_field_->setStyleSheet(
-        "background: #2a2a2a; border: 1px solid #555; border-radius: 8px; "
-        "padding: 8px 14px; font-size: 14px; color: white;");
+        "QLineEdit { background: #2b2d31; border: 2px solid #3f3f46; border-radius: 10px; "
+        "  padding: 10px 16px; font-size: 14px; color: #dbdee1; "
+        "  font-family: 'Inter', 'Segoe UI', sans-serif; }"
+        "QLineEdit:focus { border-color: #5865F2; }"
+        "QLineEdit::placeholder { color: #949ba4; }");
     connect(input_field_, &QLineEdit::returnPressed, this, &VisionAI::onSendCommand);
-    
+
     auto* send_btn = new QPushButton("▶");
-    send_btn->setFixedSize(40, 36);
+    send_btn->setFixedSize(42, 40);
     send_btn->setStyleSheet(
-        "background: #7B68EE; border: none; border-radius: 8px; "
-        "font-size: 16px; color: white;");
+        "QPushButton { background: #5865F2; border: none; border-radius: 10px; "
+        "  font-size: 16px; color: white; }"
+        "QPushButton:hover { background: #4752C4; }"
+        "QPushButton:pressed { background: #3C45A5; }");
     connect(send_btn, &QPushButton::clicked, this, &VisionAI::onSendCommand);
-    
+
     input_layout->addWidget(input_field_, 1);
     input_layout->addWidget(send_btn);
     main_layout->addLayout(input_layout);
-    
+
     // ── Status bar ───────────────────────────────────────────────
-    status_label_ = new QLabel("Ready");
-    status_label_->setStyleSheet("color: #666; font-size: 11px; padding: 4px;");
+    status_label_ = new QLabel("● Ready");
+    status_label_->setStyleSheet(
+        "color: #57F287; font-size: 11px; padding: 4px 8px; "
+        "font-family: 'Inter', 'Segoe UI';");
     main_layout->addWidget(status_label_);
     
     // ── Keyboard shortcuts ───────────────────────────────────────
@@ -899,14 +920,9 @@ void VisionAI::addMessage(const std::string& sender, const std::string& text) {
 }
 
 void VisionAI::appendMessage(const QString& sender, const QString& text) {
-    QString color = (sender == "You") ? "#7B68EE" : "#4CAF50";
-    QString html = QString("<p><b style='color:%1'>%2:</b> %3</p>")
-                       .arg(color, sender, text.toHtmlEscaped().replace("\n", "<br>"));
-    chat_display_->append(html);
-    
-    // Auto-scroll
-    auto* sb = chat_display_->verticalScrollBar();
-    sb->setValue(sb->maximum());
+    MessageType type = (sender == "You") ? MessageType::User : MessageType::AI;
+    if (sender == "SYSTEM" || sender == "System") type = MessageType::System;
+    chat_widget_->addMessage(sender, text, type);
 }
 
 void VisionAI::updateStatus(const std::string& text, const std::string& color) {
@@ -915,13 +931,13 @@ void VisionAI::updateStatus(const std::string& text, const std::string& color) {
 }
 
 void VisionAI::setStatusText(const QString& text, const QString& color) {
-    status_label_->setText(text);
-    if (!color.isEmpty()) {
-        status_label_->setStyleSheet(
-            QString("color: %1; font-size: 11px; padding: 4px;").arg(color));
-    } else {
-        status_label_->setStyleSheet("color: #666; font-size: 11px; padding: 4px;");
-    }
+    // Prefix with colored dot indicator
+    QString dotColor = color.isEmpty() ? "#57F287" : color;
+    QString displayText = QString("● %1").arg(text);
+    status_label_->setText(displayText);
+    status_label_->setStyleSheet(
+        QString("color: %1; font-size: 11px; padding: 4px 8px; "
+                "font-family: 'Inter', 'Segoe UI';").arg(dotColor));
 }
 
 void VisionAI::updateSystemStats() {
@@ -1069,7 +1085,7 @@ void VisionAI::onHistoryDown() {
     input_field_->setText(QString::fromStdString(command_history_[history_index_]));
 }
 
-void VisionAI::onClearChat() { chat_display_->clear(); }
+void VisionAI::onClearChat() { chat_widget_->clear(); }
 
 void VisionAI::onCopyLast() {
     std::lock_guard<std::mutex> lock(state_mutex_);

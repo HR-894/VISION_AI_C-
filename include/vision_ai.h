@@ -16,7 +16,6 @@
 #include <mutex>
 #include <unordered_map>
 #include <QMainWindow>
-#include <QTextEdit>
 #include <QLineEdit>
 #include <QLabel>
 #include <QTimer>
@@ -37,6 +36,7 @@
 #include "smart_template_matcher.h"
 #include "fast_complex_handler.h"
 #include "command_router.h"
+#include "chat_widget.h"
 
 #ifdef VISION_HAS_WHISPER
 #include "whisper_engine.h"
@@ -150,7 +150,7 @@ private:
 #endif
 
     // ── UI Widgets ───────────────────────────────────────────────
-    QTextEdit* chat_display_ = nullptr;
+    ChatWidget* chat_widget_ = nullptr;
     QLineEdit* input_field_ = nullptr;
     QLabel* status_label_ = nullptr;
     QLabel* cpu_label_ = nullptr;
