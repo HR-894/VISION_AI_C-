@@ -57,6 +57,11 @@ void ConfigManager::initDefaults() {
         {"run_on_startup", false},
         {"theme", "dark"},
         {"language", "en"},
+        {"engine_mode", "local"},
+        {"cloud_api_key_encrypted", ""},
+        {"cloud", {
+            {"model", "llama-3.3-70b-versatile"}
+        }},
         {"llm", {
             {"model_path", ""},
             {"gpu_layers", 0},

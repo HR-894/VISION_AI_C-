@@ -1305,7 +1305,47 @@ void VisionAI::showHelpDialog() {
 }
 
 void VisionAI::showSettingsDialog() {
-    sys_cmds_.openSettingsPage("about");
+    SettingsDialog dlg(config_mgr_, this);
+
+    // Wire API key changes to CloudBackend in real-time
+    connect(&dlg, &SettingsDialog::apiKeyChanged, this, [this](const QString& key) {
+#ifdef VISION_HAS_LLM
+        if (llm_controller_ && llm_controller_->getCloudBackend()) {
+            llm_controller_->getCloudBackend()->setApiKey(key.toStdString());
+            LOG_INFO("Settings: API key updated in CloudBackend");
+        }
+#endif
+    });
+
+    // Wire engine mode changes
+    connect(&dlg, &SettingsDialog::engineChanged, this, [this](const QString& mode) {
+        LOG_INFO("Settings: Engine mode changed to '{}'", mode.toStdString());
+#ifdef VISION_HAS_LLM
+        if (llm_controller_) {
+            if (mode == "cloud") {
+                llm_controller_->setPreferCloud(true);
+            } else if (mode == "local") {
+                llm_controller_->setPreferCloud(false);
+            }
+            // Hybrid = let LLMController auto-decide
+        }
+#endif
+    });
+
+    dlg.exec();
+
+    // If settings were modified, check for first-run prompt
+    if (dlg.wasModified()) {
+        std::string engine = config_mgr_.get<std::string>("engine_mode", "local");
+        std::string key = config_mgr_.get<std::string>("cloud_api_key_encrypted", "");
+
+        if ((engine == "cloud" || engine == "hybrid") && key.empty()) {
+            addMessage("VISION", "💡 To use Cloud mode, please click ⚙️ and enter your Groq API Key.\n"
+                       "Get one free at: https://console.groq.com/keys");
+        } else {
+            addMessage("SYSTEM", "✅ Settings saved successfully.");
+        }
+    }
 }
 
 static std::string getHelpTextStatic() {

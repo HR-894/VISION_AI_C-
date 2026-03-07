@@ -186,6 +186,7 @@ set(VISION_HEADERS
     include/screen_observer.h
     include/vector_memory.h
     include/confidence_scorer.h
+    include/settings_dialog.h
     include/vision_ai.h
 )
 
@@ -212,6 +213,7 @@ set(VISION_SOURCES
     src/screen_observer.cpp
     src/vector_memory.cpp
     src/confidence_scorer.cpp
+    src/settings_dialog.cpp
 )
 
 # Conditional AI sources
