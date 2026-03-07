@@ -109,9 +109,11 @@ SettingsDialog::SettingsDialog(ConfigManager& config, QWidget* parent)
 }
 
 SettingsDialog::~SettingsDialog() {
-    // Secure wipe the API key from memory
+    // Secure wipe: clear the QLineEdit first (removes from Qt internals),
+    // then volatile-overwrite our local copy of the key.
     if (api_key_edit_) {
         QString text = api_key_edit_->text();
+        api_key_edit_->clear();  // Removes key from QLineEdit's internal buffer
         if (!text.isEmpty()) {
             auto data = text.toUtf8();
             volatile char* p = data.data();
@@ -379,8 +381,8 @@ void SettingsDialog::onSave() {
         if (!encrypted.empty()) {
             config_.set("cloud_api_key_encrypted", encrypted);
             LOG_INFO("Settings: API key saved (DPAPI encrypted, {} bytes)", encrypted.size());
+            emit apiKeyChanged(key_text);  // Only emit if encryption succeeded
         }
-        emit apiKeyChanged(key_text);
     }
 
     // Cloud model
@@ -388,15 +390,19 @@ void SettingsDialog::onSave() {
         {"model", cloud_model_combo_->currentText().toStdString()}
     });
 
-    // Local LLM settings
-    config_.set("llm", nlohmann::json{
-        {"model_path", model_path_edit_->text().toStdString()},
-        {"gpu_layers", gpu_layers_spin_->value()},
-        {"context_size", context_spin_->value()},
-        {"temperature", config_.getNested<double>("llm.temperature", 0.1)},
-        {"top_p", config_.getNested<double>("llm.top_p", 0.9)},
-        {"timeout", config_.getNested<int>("llm.timeout", 30)}
-    });
+    // Local LLM settings — MERGE into existing config to preserve unknown keys
+    {
+        nlohmann::json llm_cfg;
+        // Read existing llm config as baseline
+        try {
+            llm_cfg = config_.raw()["llm"];
+        } catch (...) {}
+        // Overwrite only the UI-visible fields
+        llm_cfg["model_path"] = model_path_edit_->text().toStdString();
+        llm_cfg["gpu_layers"] = gpu_layers_spin_->value();
+        llm_cfg["context_size"] = context_spin_->value();
+        config_.set("llm", llm_cfg);
+    }
 
     // General
     config_.set("run_on_startup", startup_check_->isChecked());
@@ -415,7 +421,7 @@ void SettingsDialog::onCancel() {
 }
 
 void SettingsDialog::onEngineChanged(int index) {
-    const char* descs[] = {
+    static const char* descs[] = {
         "Local model runs entirely on your machine. No data leaves your PC. "
         "Requires a downloaded .gguf model.",
         "Cloud mode uses Groq's ultra-fast API. Requires an API key. "
@@ -423,6 +429,7 @@ void SettingsDialog::onEngineChanged(int index) {
         "Hybrid mode uses cloud for complex queries and local for simple ones. "
         "Best of both worlds."
     };
+    if (index < 0 || index >= 3) return;  // Guard against OOB
     engine_desc_->setText(descs[index]);
     updateVisibility();
 }

@@ -131,8 +131,9 @@ ScreenObserver::CapturedFrame ScreenObserver::captureFrame() {
     }
 
     if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_SESSION_DISCONNECTED) {
-        // Screen lock / UAC / monitor sleep — will be handled by workerLoop
+        // Screen lock / UAC / monitor sleep — reset duplication so backoff kicks in
         LOG_WARN("ScreenObserver: DXGI access lost (screen lock/UAC?)");
+        duplication_.Reset();  // BUG 10 FIX: Must nullify so workerLoop enters backoff
         return frame;
     }
 
@@ -155,8 +156,17 @@ ScreenObserver::CapturedFrame ScreenObserver::captureFrame() {
     frame.width = desc.Width;
     frame.height = desc.Height;
 
-    // Create staging texture (CPU-readable) if needed
-    if (!staging_tex_) {
+    // Create staging texture (CPU-readable) — recreate on resolution change
+    bool need_staging = !staging_tex_;
+    if (staging_tex_) {
+        D3D11_TEXTURE2D_DESC existing_desc;
+        staging_tex_->GetDesc(&existing_desc);
+        if (existing_desc.Width != desc.Width || existing_desc.Height != desc.Height) {
+            staging_tex_.Reset();  // BUG 5 FIX: Resolution changed, recreate
+            need_staging = true;
+        }
+    }
+    if (need_staging) {
         D3D11_TEXTURE2D_DESC staging_desc = desc;
         staging_desc.Usage = D3D11_USAGE_STAGING;
         staging_desc.BindFlags = 0;
@@ -319,9 +329,9 @@ void ScreenObserver::start(OCRCallback ocr_fn, int interval_ms) {
     ocr_fn_ = std::move(ocr_fn);
     interval_ms_ = interval_ms;
     stop_requested_ = false;
+    running_ = true;  // BUG 4 FIX: Set BEFORE thread launch to prevent race
 
     worker_ = std::thread([this]() { workerLoop(); });
-    running_ = true;
     LOG_INFO("ScreenObserver: Background thread started (interval={}ms)", interval_ms_);
 }
 

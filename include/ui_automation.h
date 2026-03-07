@@ -12,10 +12,10 @@
 #include <vector>
 #include <optional>
 #include <memory>
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
+#include <nlohmann/json.hpp>
 #include <windows.h>
+#include <objbase.h>
+#include <UIAutomation.h>
 
 namespace vision {
 

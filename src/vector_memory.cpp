@@ -124,14 +124,16 @@ float VectorMemory::cosineSimilarityScalar(const float* a, const float* b, int d
 }
 
 float VectorMemory::cosineSimilarity(const float* a, const float* b, int dim) {
-    // Runtime AVX2 detection
+    // BUG 6 FIX: Cache AVX2 check in static local (called once per process, not per-search)
+    static const bool hasAVX2 = []() {
 #ifdef _MSC_VER
-    int cpuInfo[4];
-    __cpuid(cpuInfo, 7);
-    bool hasAVX2 = (cpuInfo[1] & (1 << 5)) != 0;
+        int cpuInfo[4];
+        __cpuid(cpuInfo, 7);
+        return (cpuInfo[1] & (1 << 5)) != 0;
 #else
-    bool hasAVX2 = __builtin_cpu_supports("avx2");
+        return __builtin_cpu_supports("avx2");
 #endif
+    }();
 
     if (hasAVX2) {
         return cosineSimilarityAVX2(a, b, dim);
@@ -198,8 +200,14 @@ bool VectorMemory::storeWithEmbedding(const std::string& text, const float* embe
 std::vector<MemorySearchResult> VectorMemory::search(const std::string& query,
                                                        int top_k,
                                                        float min_similarity) const {
-    if (!embed_fn_) return {};
-    auto embedding = embed_fn_(query);
+    // BUG 8 FIX: Copy embed_fn_ under lock to prevent data race with setEmbeddingFn()
+    EmbeddingFn fn;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        fn = embed_fn_;
+    }
+    if (!fn) return {};
+    auto embedding = fn(query);
     if (embedding.size() < kEmbeddingDim) return {};
     return searchByEmbedding(embedding.data(), top_k, min_similarity);
 }

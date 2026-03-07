@@ -195,7 +195,7 @@ VisionAI::~VisionAI() {
     timedJoin(cmd_thread_, 3000);          // Command processing: 3s max
 
 #ifdef VISION_HAS_WHISPER
-    if (audio_capture_) audio_capture_->stop();  // Stop mic stream
+    if (audio_capture_) audio_capture_->stopRecording();  // Stop mic stream
     timedJoin(audio_thread_, 2000);
 #endif
 
@@ -225,7 +225,7 @@ VisionAI::~VisionAI() {
 
     // Save vector memory to disk before shutdown
     if (vector_memory_) {
-        std::string mem_path = (fs::path(config_mgr_.getDataDir()) / "vector_memory.bin").string();
+        std::string mem_path = (fs::path(config_.getDataDir()) / "vector_memory.bin").string();
         vector_memory_->save(mem_path);
         vector_memory_.reset();
     }
@@ -495,13 +495,13 @@ void VisionAI::loadModels() {
         vector_memory_->setEmbeddingFn(
             [this](const std::string& text) -> std::vector<float> {
                 if (is_shutting_down_.load()) return {};
-                return llm_controller_->getEmbedding(text);
+                return llm_controller_->getEmbeddings(text);
             }
         );
     }
 #endif
     // Load persisted memories
-    std::string mem_path = (fs::path(config_mgr_.getDataDir()) / "vector_memory.bin").string();
+    std::string mem_path = (fs::path(config_.getDataDir()) / "vector_memory.bin").string();
     if (fs::exists(mem_path)) {
         vector_memory_->load(mem_path);
         LOG_INFO("Vector Memory loaded: {} entries", vector_memory_->size());
@@ -511,7 +511,13 @@ void VisionAI::loadModels() {
     confidence_scorer_ = std::make_unique<ConfidenceScorer>();
     confidence_scorer_->setVectorMemory(vector_memory_.get());
     confidence_scorer_->setAppListFn([this]() -> std::vector<std::string> {
-        return window_mgr_.getRunningAppNames();
+        auto windows = window_mgr_.listWindows();
+        std::vector<std::string> names;
+        names.reserve(windows.size());
+        for (const auto& w : windows) {
+            if (!w.exe_name.empty()) names.push_back(w.exe_name);
+        }
+        return names;
     });
     confidence_scorer_->setTemplateScoreFn([this](const std::string& cmd) -> float {
         auto match = template_matcher_.match(cmd);
@@ -689,7 +695,11 @@ void VisionAI::onSendCommand() {
 
                     // If ambiguity — populate with running app names
                     if (conf.ambiguity_penalty < 1.0f) {
-                        auto apps = window_mgr_.getRunningAppNames();
+                        auto windows = window_mgr_.listWindows();
+                        std::vector<std::string> apps;
+                        for (const auto& w : windows) {
+                            if (!w.exe_name.empty()) apps.push_back(w.exe_name);
+                        }
                         pending.options = apps;
                         pending.resolved_command = "{OPTION}";
                         std::string option_list;
@@ -1305,13 +1315,13 @@ void VisionAI::showHelpDialog() {
 }
 
 void VisionAI::showSettingsDialog() {
-    SettingsDialog dlg(config_mgr_, this);
+    vision::SettingsDialog dlg(config_, this);
 
     // Wire API key changes to CloudBackend in real-time
     connect(&dlg, &SettingsDialog::apiKeyChanged, this, [this](const QString& key) {
 #ifdef VISION_HAS_LLM
-        if (llm_controller_ && llm_controller_->getCloudBackend()) {
-            llm_controller_->getCloudBackend()->setApiKey(key.toStdString());
+        if (llm_controller_) {
+            llm_controller_->setCloudApiKey(key.toStdString());
             LOG_INFO("Settings: API key updated in CloudBackend");
         }
 #endif
@@ -1323,9 +1333,9 @@ void VisionAI::showSettingsDialog() {
 #ifdef VISION_HAS_LLM
         if (llm_controller_) {
             if (mode == "cloud") {
-                llm_controller_->setPreferCloud(true);
+                llm_controller_->setBackend(BackendType::Cloud);
             } else if (mode == "local") {
-                llm_controller_->setPreferCloud(false);
+                llm_controller_->setBackend(BackendType::Local);
             }
             // Hybrid = let LLMController auto-decide
         }
@@ -1336,8 +1346,8 @@ void VisionAI::showSettingsDialog() {
 
     // If settings were modified, check for first-run prompt
     if (dlg.wasModified()) {
-        std::string engine = config_mgr_.get<std::string>("engine_mode", "local");
-        std::string key = config_mgr_.get<std::string>("cloud_api_key_encrypted", "");
+        std::string engine = config_.get<std::string>("engine_mode", "local");
+        std::string key = config_.get<std::string>("cloud_api_key_encrypted", "");
 
         if ((engine == "cloud" || engine == "hybrid") && key.empty()) {
             addMessage("VISION", "💡 To use Cloud mode, please click ⚙️ and enter your Groq API Key.\n"
