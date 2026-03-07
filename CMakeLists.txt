@@ -348,15 +348,7 @@ else()
 endif()
 
 # ============================================================
-# Post-build: copy Qt platform plugins (required for Qt apps to launch)
-add_custom_command(TARGET VISION_AI POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:VISION_AI>/platforms"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${_qt6_install_prefix}/../../../Qt6/plugins/platforms/qwindows.dll"
-        "$<TARGET_FILE_DIR:VISION_AI>/platforms/qwindows.dll"
-    COMMENT "Copying Qt platform plugin..."
-)
+# Post-build: Qt platform plugins are handled by windeployqt during deployment
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/models")
     add_custom_command(TARGET VISION_AI POST_BUILD

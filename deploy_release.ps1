@@ -80,6 +80,7 @@ $windeployqt = Get-Command "windeployqt" -ErrorAction SilentlyContinue
 if (-not $windeployqt) {
     # Try default Qt6 paths
     $QtPaths = @(
+        "C:\vcpkg\installed\x64-windows\tools\Qt6\bin\windeployqt.exe",
         "C:\Qt\6.8.0\msvc2022_64\bin\windeployqt.exe",
         "C:\Qt\6.7.0\msvc2022_64\bin\windeployqt.exe",
         "$env:QTDIR\bin\windeployqt.exe"

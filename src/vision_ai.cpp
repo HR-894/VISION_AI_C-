@@ -4,6 +4,7 @@
  */
 
 #include "vision_ai.h"
+#include "settings_dialog.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QSplitter>
@@ -1315,7 +1316,7 @@ void VisionAI::showHelpDialog() {
 }
 
 void VisionAI::showSettingsDialog() {
-    vision::SettingsDialog dlg(config_, this);
+    SettingsDialog dlg(config_, this);
 
     // Wire API key changes to CloudBackend in real-time
     connect(&dlg, &SettingsDialog::apiKeyChanged, this, [this](const QString& key) {
