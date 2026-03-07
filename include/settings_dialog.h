@@ -41,6 +41,9 @@ public:
     /// Was the config modified?
     bool wasModified() const { return modified_; }
 
+    /// Public DPAPI decrypt — used by loadModels() to restore saved API key
+    static std::string decryptDPAPI(const std::string& ciphertext_b64);
+
 signals:
     /// Emitted when API key changes (to update CloudBackend in real-time)
     void apiKeyChanged(const QString& key);
@@ -89,7 +92,6 @@ private:
 
     // ── DPAPI Encryption ───────────────────────────
     static std::string encryptDPAPI(const std::string& plaintext);
-    static std::string decryptDPAPI(const std::string& ciphertext_b64);
     static std::string toBase64(const std::vector<uint8_t>& data);
     static std::vector<uint8_t> fromBase64(const std::string& b64);
 };

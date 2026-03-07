@@ -423,6 +423,36 @@ void VisionAI::loadModels() {
 #ifdef VISION_HAS_LLM
     llm_controller_ = std::make_unique<LLMController>();
 
+    // ── Restore saved API key from encrypted config ──────────────
+    // The SettingsDialog stores the key as DPAPI-encrypted Base64.
+    // We decrypt it here so Cloud Mode works immediately on restart.
+    {
+        std::string encrypted_b64 = config_.get<std::string>("cloud_api_key_encrypted", "");
+        if (!encrypted_b64.empty()) {
+            std::string decrypted_key = SettingsDialog::decryptDPAPI(encrypted_b64);
+            if (!decrypted_key.empty()) {
+                llm_controller_->setCloudApiKey(decrypted_key);
+                LOG_INFO("Cloud API key restored from encrypted config");
+            } else {
+                LOG_WARN("Failed to decrypt saved cloud API key — user must re-enter");
+            }
+        }
+    }
+
+    // Also restore backend mode from config
+    {
+        std::string engine_mode = config_.get<std::string>("engine_mode", "local");
+        if (engine_mode == "cloud") {
+            llm_controller_->setBackend(BackendType::Cloud);
+            LOG_INFO("Engine mode restored: Cloud");
+        } else if (engine_mode == "hybrid") {
+            // Hybrid: start with cloud, fall back to local
+            llm_controller_->setBackend(BackendType::Cloud);
+            LOG_INFO("Engine mode restored: Hybrid (cloud-first)");
+        }
+        // else: default is Local, already set
+    }
+
     // Apply dynamic context size and thread count from device profiler
     auto rec2 = profiler_.getRecommendedConfig();
     int ctx_size = rec2.value("context_size", 2048);

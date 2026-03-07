@@ -96,6 +96,13 @@ void ActionExecutor::registerAction(const std::string& name, ActionHandler handl
 
 std::pair<bool, std::string> ActionExecutor::executeAction(const std::string& action,
                                                             const json& params) {
+    // ── Chat action: pass the AI's natural-language reply straight to UI ──
+    if (action == "chat") {
+        std::string message = params.value("message",
+            "I'm not sure how to help with that. Could you rephrase?");
+        return {true, message};
+    }
+
     auto it = action_map_.find(action);
     if (it != action_map_.end()) {
         try {

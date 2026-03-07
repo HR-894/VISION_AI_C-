@@ -190,13 +190,11 @@ void AgentMemory::recordTask(const std::string& command, const std::string& resu
         {"timestamp", ts}
     };
 
-    // Store vector embedding — auto-generate if LLM is available
-    std::vector<float> emb = embedding;
-    if (emb.empty() && llm_) {
-        emb = llm_->getEmbeddings(command);
-    }
-    if (!emb.empty()) {
-        entry["embedding"] = emb;
+    // Store vector embedding ONLY if explicitly provided by caller.
+    // Do NOT auto-generate via llm_->getEmbeddings() — on 8GB RAM machines
+    // this forces the local GGUF model to load just for embeddings, causing OOM.
+    if (!embedding.empty()) {
+        entry["embedding"] = embedding;
     }
     
     memory_["task_history"].push_back(entry);
@@ -274,11 +272,9 @@ std::vector<json> AgentMemory::findSimilarTasks(const std::string& command,
     std::vector<json> results;
     if (!memory_.contains("task_history")) return results;
 
-    // Auto-generate embedding for query if not provided and LLM is available
+    // Use embedding ONLY if explicitly provided by caller.
+    // Do NOT auto-generate — prevents OOM on low-RAM machines.
     std::vector<float> effective_embedding = query_embedding;
-    if (effective_embedding.empty() && llm_) {
-        effective_embedding = llm_->getEmbeddings(command);
-    }
 
     // ── Strategy 1: Cosine similarity with vector embeddings ──
     if (!effective_embedding.empty()) {

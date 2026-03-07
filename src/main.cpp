@@ -8,6 +8,8 @@
 #include "model_downloader_wizard.h"
 #include <QApplication>
 #include <QStyleFactory>
+#include <QFile>
+#include <QIcon>
 
 #ifdef VISION_HAS_SPDLOG
 #include <spdlog/spdlog.h>
@@ -51,7 +53,21 @@ int WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/,
     app.setApplicationName("VISION AI");
     app.setApplicationVersion(VISION_VERSION);
     app.setOrganizationName("VISION");
-    
+
+    // ── Application Icon ─────────────────────────────────────────
+    // Load from assets/icon.png next to the executable, or from project root.
+    // This icon shows in taskbar, title bar, system tray, and Alt+Tab.
+    {
+        QString iconPath = QCoreApplication::applicationDirPath() + "/assets/icon.png";
+        if (!QFile::exists(iconPath)) {
+            // Fallback: look relative to working directory (dev mode)
+            iconPath = "assets/icon.png";
+        }
+        if (QFile::exists(iconPath)) {
+            app.setWindowIcon(QIcon(iconPath));
+        }
+    }
+
     // Force dark style
     app.setStyle(QStyleFactory::create("Fusion"));
     

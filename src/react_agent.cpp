@@ -151,12 +151,18 @@ json ReActAgent::observe() {
 }
 
 std::optional<json> ReActAgent::think(const std::string& cmd, const json& ctx) {
-    // Build a reinforced JSON-only task prompt with strict system persona
+    // Build a dual-mode prompt: OS actions OR natural chat, always as JSON
     std::string strict_cmd =
-        "[SYSTEM] You are a native Windows local AI core. "
-        "You have NO internet access. You do not chat. "
-        "You strictly output JSON commands to control the OS. "
-        "Do not provide explanations.\n\n"
+        "[SYSTEM] You are VISION AI, a helpful native Windows desktop assistant. "
+        "You can execute OS commands OR chat naturally with the user. "
+        "You MUST strictly output ONLY valid JSON — no extra text. "
+        "To execute an OS command, output: {\"action\": \"<cmd_name>\", \"params\": {...}} "
+        "To chat, answer a question, greet, or if you cannot perform a task, output: "
+        "{\"action\": \"chat\", \"params\": {\"message\": \"your natural reply\"}} "
+        "Available actions: open_app, open_url, search_web, type_text, press_key, "
+        "click_element, scroll, set_volume, set_brightness, minimize, maximize, "
+        "close_window, focus_window, screenshot, list_files, move_file, copy_file, "
+        "delete_file, clipboard_get, clipboard_set, task_complete, chat.\n\n"
         "[USER TASK] " + cmd;
 
     return llm_.reactStep(strict_cmd, ctx, action_history_);
