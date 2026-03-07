@@ -20,6 +20,7 @@
 #include <chrono>
 #include <optional>
 #include <cstdint>
+#include <memory>
 
 namespace vision {
 
@@ -103,19 +104,31 @@ public:
     int purgeOlderThan(int seconds);
 
 private:
-    // ── Aligned Matrix ─────────────────────────────────────────────
-    // Single contiguous block: kMaxMemoryEntries × kEmbeddingDim floats
+    // ── Aligned Memory RAII ────────────────────────────────────
+    struct AlignedDeleter {
+        void operator()(float* p) const {
+#ifdef _MSC_VER
+            _aligned_free(p);
+#else
+            free(p);
+#endif
+        }
+    };
+    using AlignedPtr = std::unique_ptr<float[], AlignedDeleter>;
+
+    // ── Aligned Matrix ────────────────────────────────────────
+    // Single contiguous block: kMaxMemoryEntries × kPaddedDim floats
     // 32-byte aligned for AVX2 _mm256_load_ps
-    float* matrix_ = nullptr;
+    // RAII managed — auto-freed on destruction/exception/move
+    AlignedPtr matrix_;
     int count_ = 0;
     mutable std::mutex mutex_;
 
     void allocateMatrix();
-    void freeMatrix();
 
     /// Get pointer to row i (aligned)
-    float* row(int i) { return matrix_ + i * kEmbeddingDim; }
-    const float* row(int i) const { return matrix_ + i * kEmbeddingDim; }
+    float* row(int i) { return matrix_.get() + i * kPaddedDim; }
+    const float* row(int i) const { return matrix_.get() + i * kPaddedDim; }
 
     // Pad embedding dim to multiple of 8 for AVX2
     static constexpr int kPaddedDim = ((kEmbeddingDim + 7) / 8) * 8;  // 768 → 768

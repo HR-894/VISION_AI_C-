@@ -56,9 +56,9 @@ bool ScreenObserver::initDXGI() {
         0,                          // No flags
         nullptr, 0,                 // Default feature levels
         D3D11_SDK_VERSION,
-        &device_,
+        device_.ReleaseAndGetAddressOf(),
         &feature_level,
-        &context_
+        context_.ReleaseAndGetAddressOf()
     );
     if (FAILED(hr)) {
         LOG_ERROR("ScreenObserver: D3D11CreateDevice failed: 0x{:08X}", (unsigned)hr);
@@ -66,19 +66,17 @@ bool ScreenObserver::initDXGI() {
     }
 
     // Get DXGI device → adapter → output (primary monitor)
-    IDXGIDevice* dxgi_device = nullptr;
-    hr = device_->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgi_device);
+    Microsoft::WRL::ComPtr<IDXGIDevice> dxgi_device;
+    hr = device_->QueryInterface(IID_PPV_ARGS(dxgi_device.GetAddressOf()));
     if (FAILED(hr)) { releaseDXGI(); return false; }
 
-    IDXGIAdapter* adapter = nullptr;
-    hr = dxgi_device->GetAdapter(&adapter);
-    dxgi_device->Release();
+    Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+    hr = dxgi_device->GetAdapter(adapter.GetAddressOf());
     if (FAILED(hr)) { releaseDXGI(); return false; }
 
     // Primary monitor = Output 0
-    IDXGIOutput* output = nullptr;
-    hr = adapter->EnumOutputs(0, &output);
-    adapter->Release();
+    Microsoft::WRL::ComPtr<IDXGIOutput> output;
+    hr = adapter->EnumOutputs(0, output.GetAddressOf());
     if (FAILED(hr)) {
         LOG_ERROR("ScreenObserver: No display output found");
         releaseDXGI();
@@ -86,14 +84,12 @@ bool ScreenObserver::initDXGI() {
     }
 
     // Get IDXGIOutput1 for duplication API
-    IDXGIOutput1* output1 = nullptr;
-    hr = output->QueryInterface(__uuidof(IDXGIOutput1), (void**)&output1);
-    output->Release();
+    Microsoft::WRL::ComPtr<IDXGIOutput1> output1;
+    hr = output->QueryInterface(IID_PPV_ARGS(output1.GetAddressOf()));
     if (FAILED(hr)) { releaseDXGI(); return false; }
 
     // Create desktop duplication
-    hr = output1->DuplicateOutput(device_, &duplication_);
-    output1->Release();
+    hr = output1->DuplicateOutput(device_.Get(), duplication_.ReleaseAndGetAddressOf());
     if (FAILED(hr)) {
         LOG_ERROR("ScreenObserver: DuplicateOutput failed: 0x{:08X}", (unsigned)hr);
         releaseDXGI();
@@ -105,10 +101,11 @@ bool ScreenObserver::initDXGI() {
 }
 
 void ScreenObserver::releaseDXGI() {
-    if (staging_tex_)  { staging_tex_->Release();  staging_tex_ = nullptr; }
-    if (duplication_)   { duplication_->Release();   duplication_ = nullptr; }
-    if (context_)       { context_->Release();       context_ = nullptr; }
-    if (device_)        { device_->Release();        device_ = nullptr; }
+    // ComPtr::Reset() calls Release() automatically — no manual cleanup!
+    staging_tex_.Reset();
+    duplication_.Reset();
+    context_.Reset();
+    device_.Reset();
 }
 
 bool ScreenObserver::reinitDXGI() {
@@ -123,10 +120,10 @@ ScreenObserver::CapturedFrame ScreenObserver::captureFrame() {
     if (!duplication_) return frame;
 
     DXGI_OUTDUPL_FRAME_INFO frame_info;
-    IDXGIResource* resource = nullptr;
+    Microsoft::WRL::ComPtr<IDXGIResource> resource;
 
     // Try to acquire (timeout = 100ms — don't block too long)
-    HRESULT hr = duplication_->AcquireNextFrame(100, &frame_info, &resource);
+    HRESULT hr = duplication_->AcquireNextFrame(100, &frame_info, resource.GetAddressOf());
 
     if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
         // No new frame — screen hasn't changed (this is fine)
@@ -145,9 +142,8 @@ ScreenObserver::CapturedFrame ScreenObserver::captureFrame() {
     }
 
     // Get the texture from the resource
-    ID3D11Texture2D* desktop_tex = nullptr;
-    hr = resource->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&desktop_tex);
-    resource->Release();
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> desktop_tex;
+    hr = resource->QueryInterface(IID_PPV_ARGS(desktop_tex.GetAddressOf()));
     if (FAILED(hr)) {
         duplication_->ReleaseFrame();
         return frame;
@@ -160,30 +156,26 @@ ScreenObserver::CapturedFrame ScreenObserver::captureFrame() {
     frame.height = desc.Height;
 
     // Create staging texture (CPU-readable) if needed
-    if (!staging_tex_ || desc.Width != (UINT)frame.width) {
-        if (staging_tex_) staging_tex_->Release();
-
+    if (!staging_tex_) {
         D3D11_TEXTURE2D_DESC staging_desc = desc;
         staging_desc.Usage = D3D11_USAGE_STAGING;
         staging_desc.BindFlags = 0;
         staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
         staging_desc.MiscFlags = 0;
 
-        hr = device_->CreateTexture2D(&staging_desc, nullptr, &staging_tex_);
+        hr = device_->CreateTexture2D(&staging_desc, nullptr, staging_tex_.ReleaseAndGetAddressOf());
         if (FAILED(hr)) {
-            desktop_tex->Release();
             duplication_->ReleaseFrame();
             return frame;
         }
     }
 
     // Copy GPU texture → staging texture
-    context_->CopyResource(staging_tex_, desktop_tex);
-    desktop_tex->Release();
+    context_->CopyResource(staging_tex_.Get(), desktop_tex.Get());
 
     // Map staging texture → CPU memory
     D3D11_MAPPED_SUBRESOURCE mapped;
-    hr = context_->Map(staging_tex_, 0, D3D11_MAP_READ, 0, &mapped);
+    hr = context_->Map(staging_tex_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
     if (FAILED(hr)) {
         duplication_->ReleaseFrame();
         return frame;
@@ -198,7 +190,7 @@ ScreenObserver::CapturedFrame ScreenObserver::captureFrame() {
                row_bytes);
     }
 
-    context_->Unmap(staging_tex_, 0);
+    context_->Unmap(staging_tex_.Get(), 0);
     duplication_->ReleaseFrame();
 
     frame.valid = true;

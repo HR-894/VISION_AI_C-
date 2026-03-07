@@ -48,36 +48,24 @@ VectorMemory::VectorMemory() {
     allocateMatrix();
 }
 
-VectorMemory::~VectorMemory() {
-    freeMatrix();
-}
+VectorMemory::~VectorMemory() = default;  // AlignedPtr auto-frees!
 
 void VectorMemory::allocateMatrix() {
     // 32-byte aligned allocation for AVX2 _mm256_load_ps
-    // Each row is kPaddedDim floats (padded to multiple of 8)
+    // RAII managed via AlignedPtr — auto-freed on destruction/exception
     size_t total_bytes = static_cast<size_t>(kMaxMemoryEntries) * kPaddedDim * sizeof(float);
 #ifdef _MSC_VER
-    matrix_ = static_cast<float*>(_aligned_malloc(total_bytes, 32));
+    float* raw = static_cast<float*>(_aligned_malloc(total_bytes, 32));
 #else
-    matrix_ = static_cast<float*>(aligned_alloc(32, total_bytes));
+    float* raw = static_cast<float*>(aligned_alloc(32, total_bytes));
 #endif
+    matrix_.reset(raw);  // AlignedPtr takes ownership
     if (matrix_) {
-        std::memset(matrix_, 0, total_bytes);
-        LOG_INFO("VectorMemory: Allocated {}MB aligned matrix ({} × {})",
+        std::memset(matrix_.get(), 0, total_bytes);
+        LOG_INFO("VectorMemory: Allocated {}MB aligned matrix ({} x {})",
                  total_bytes / (1024 * 1024), kMaxMemoryEntries, kPaddedDim);
     } else {
         LOG_ERROR("VectorMemory: Failed to allocate aligned matrix!");
-    }
-}
-
-void VectorMemory::freeMatrix() {
-    if (matrix_) {
-#ifdef _MSC_VER
-        _aligned_free(matrix_);
-#else
-        free(matrix_);
-#endif
-        matrix_ = nullptr;
     }
 }
 
@@ -223,17 +211,20 @@ std::vector<MemorySearchResult> VectorMemory::searchByEmbedding(
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Prepare aligned query vector (the query might not be aligned)
-    float* aligned_query = nullptr;
+    // RAII aligned query vector — auto-freed on ANY return path
+    AlignedPtr aligned_query;
+    {
 #ifdef _MSC_VER
-    aligned_query = static_cast<float*>(_aligned_malloc(kPaddedDim * sizeof(float), 32));
+        float* raw = static_cast<float*>(_aligned_malloc(kPaddedDim * sizeof(float), 32));
 #else
-    aligned_query = static_cast<float*>(aligned_alloc(32, kPaddedDim * sizeof(float)));
+        float* raw = static_cast<float*>(aligned_alloc(32, kPaddedDim * sizeof(float)));
 #endif
+        aligned_query.reset(raw);
+    }
     if (!aligned_query) return {};
 
-    std::memset(aligned_query, 0, kPaddedDim * sizeof(float));
-    std::memcpy(aligned_query, query_embedding, kEmbeddingDim * sizeof(float));
+    std::memset(aligned_query.get(), 0, kPaddedDim * sizeof(float));
+    std::memcpy(aligned_query.get(), query_embedding, kEmbeddingDim * sizeof(float));
 
     // ── Flat search: compute cosine similarity against ALL vectors ──
     // With AVX2: 10,000 × 768-dim = ~2ms on modern CPU
@@ -247,7 +238,7 @@ std::vector<MemorySearchResult> VectorMemory::searchByEmbedding(
     scores.reserve(count_);
 
     for (int i = 0; i < count_; i++) {
-        float sim = cosineSimilarity(aligned_query, row(i), kPaddedDim);
+        float sim = cosineSimilarity(aligned_query.get(), row(i), kPaddedDim);
         if (sim >= min_similarity) {
             scores.push_back({i, sim});
         }
@@ -269,12 +260,7 @@ std::vector<MemorySearchResult> VectorMemory::searchByEmbedding(
         results.push_back({s.idx, s.score, &entries_[s.idx]});
     }
 
-#ifdef _MSC_VER
-    _aligned_free(aligned_query);
-#else
-    free(aligned_query);
-#endif
-
+    // aligned_query auto-freed by AlignedPtr destructor here!
     return results;
 }
 
@@ -368,7 +354,7 @@ bool VectorMemory::save(const std::string& path) const {
 
     // Write matrix (raw floats — memcpy speed on load)
     size_t matrix_bytes = static_cast<size_t>(count_) * kPaddedDim * sizeof(float);
-    file.write(reinterpret_cast<const char*>(matrix_), matrix_bytes);
+    file.write(reinterpret_cast<const char*>(matrix_.get()), matrix_bytes);
 
     // Record metadata offset
     int64_t metadata_offset = file.tellp();
@@ -425,7 +411,7 @@ bool VectorMemory::load(const std::string& path) {
 
     // Read matrix (raw memcpy — fastest possible)
     size_t matrix_bytes = static_cast<size_t>(header.count) * kPaddedDim * sizeof(float);
-    file.read(reinterpret_cast<char*>(matrix_), matrix_bytes);
+    file.read(reinterpret_cast<char*>(matrix_.get()), matrix_bytes);
 
     // Read metadata
     file.seekg(header.metadata_offset);

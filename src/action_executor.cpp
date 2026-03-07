@@ -218,11 +218,11 @@ OCRResult ActionExecutor::runOCR(const cv::Mat& screenshot, bool preprocess) {
     api->SetImage(img.data, img.cols, img.rows,
                    img.channels(), (int)img.step);
 
-    char* text = api->GetUTF8Text();
+    // RAII: unique_ptr auto-frees Tesseract's allocated text on any exit path
+    std::unique_ptr<char[]> text(api->GetUTF8Text());
     if (text) {
-        result.full_text = text;
+        result.full_text = text.get();
         result.valid = true;
-        delete[] text;
     }
 
     // Get word-level bounding boxes
@@ -230,17 +230,17 @@ OCRResult ActionExecutor::runOCR(const cv::Mat& screenshot, bool preprocess) {
     if (ri) {
         float scale = preprocess ? 0.5f : 1.0f;
         do {
-            const char* word = ri->GetUTF8Text(tesseract::RIL_WORD);
-            if (word) {
+            const char* word_raw = ri->GetUTF8Text(tesseract::RIL_WORD);
+            if (word_raw) {
+                std::unique_ptr<const char[]> word(word_raw);
                 OCRResult::Word w;
-                w.text = word;
+                w.text = word.get();
                 w.confidence = ri->Confidence(tesseract::RIL_WORD);
                 int x1, y1, x2, y2;
                 ri->BoundingBox(tesseract::RIL_WORD, &x1, &y1, &x2, &y2);
                 w.bbox = {(LONG)(x1*scale), (LONG)(y1*scale),
                           (LONG)(x2*scale), (LONG)(y2*scale)};
                 result.words.push_back(w);
-                delete[] word;
             }
         } while (ri->Next(tesseract::RIL_WORD));
         delete ri;
@@ -330,9 +330,10 @@ std::pair<bool, std::string> ActionExecutor::findAndClick(const std::string& ele
         if (ri) {
             float scale = 0.5f;  // preprocessForOCR scales 2x
             do {
-                const char* word = ri->GetUTF8Text(tesseract::RIL_WORD);
-                if (word) {
-                    std::string lower_word(word);
+                const char* word_raw2 = ri->GetUTF8Text(tesseract::RIL_WORD);
+                if (word_raw2) {
+                    std::unique_ptr<const char[]> word(word_raw2);
+                    std::string lower_word(word.get());
                     std::transform(lower_word.begin(), lower_word.end(),
                                    lower_word.begin(), ::tolower);
                     int conf = ri->Confidence(tesseract::RIL_WORD);
@@ -344,7 +345,7 @@ std::pair<bool, std::string> ActionExecutor::findAndClick(const std::string& ele
                         int cx = (int)((x1 + x2) * scale / 2);
                         int cy = (int)((y1 + y2) * scale / 2);
 
-                        delete[] word;
+                        // word auto-freed by unique_ptr on scope exit
                         delete ri;
                         api->End();
                         delete api;
@@ -359,7 +360,7 @@ std::pair<bool, std::string> ActionExecutor::findAndClick(const std::string& ele
                         LOG_INFO("Clicked via OCR: {} at ({}, {})", element, cx, cy);
                         return {true, "Clicked (OCR): " + element};
                     }
-                    delete[] word;
+                    // word auto-freed by unique_ptr here
                 }
             } while (ri->Next(tesseract::RIL_WORD));
             delete ri;

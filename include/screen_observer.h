@@ -28,6 +28,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
+#include <wrl/client.h>  // ComPtr — RAII for COM objects
 
 namespace vision {
 
@@ -82,11 +83,11 @@ public:
     int snapshotCount() const;
 
 private:
-    // ── DXGI resources ─────────────────────────────────────────────
-    ID3D11Device* device_ = nullptr;
-    ID3D11DeviceContext* context_ = nullptr;
-    IDXGIOutputDuplication* duplication_ = nullptr;
-    ID3D11Texture2D* staging_tex_ = nullptr;
+    // ── DXGI resources (ComPtr = RAII, auto-Release on destruction) ──
+    Microsoft::WRL::ComPtr<ID3D11Device> device_;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
+    Microsoft::WRL::ComPtr<IDXGIOutputDuplication> duplication_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> staging_tex_;
 
     bool initDXGI();
     void releaseDXGI();
