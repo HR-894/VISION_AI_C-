@@ -184,6 +184,7 @@ set(VISION_HEADERS
     include/ui_automation.h
     include/chat_widget.h
     include/screen_observer.h
+    include/vector_memory.h
     include/vision_ai.h
 )
 
@@ -208,6 +209,7 @@ set(VISION_SOURCES
     src/vision_ai.cpp
     src/chat_widget.cpp
     src/screen_observer.cpp
+    src/vector_memory.cpp
 )
 
 # Conditional AI sources

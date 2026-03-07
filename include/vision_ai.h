@@ -38,6 +38,7 @@
 #include "command_router.h"
 #include "chat_widget.h"
 #include "screen_observer.h"
+#include "vector_memory.h"
 
 #ifdef VISION_HAS_WHISPER
 #include "whisper_engine.h"
@@ -152,6 +153,9 @@ private:
 
     // Screen Awareness (Lazy Observer)
     std::unique_ptr<ScreenObserver> screen_observer_;
+
+    // Vector Memory (Flat Search + AVX2)
+    std::unique_ptr<VectorMemory> vector_memory_;
 
     // ── UI Widgets ───────────────────────────────────────────────
     ChatWidget* chat_widget_ = nullptr;

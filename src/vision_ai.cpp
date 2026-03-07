@@ -222,6 +222,13 @@ VisionAI::~VisionAI() {
     whisper_engine_.reset();
 #endif
     screen_observer_.reset();  // After OCR shutdown
+
+    // Save vector memory to disk before shutdown
+    if (vector_memory_) {
+        std::string mem_path = (fs::path(config_mgr_.getDataDir()) / "vector_memory.bin").string();
+        vector_memory_->save(mem_path);
+        vector_memory_.reset();
+    }
     // Stack members (router_, template_matcher_, etc.) destroyed by
     // compiler-generated destructor in reverse declaration order.
     // ═══════════════════════════════════════════════════════════════
@@ -481,6 +488,25 @@ void VisionAI::loadModels() {
     LOG_WARN("Screen Observer: OCR not compiled, running in hash-only mode");
 #endif
 
+    // ── Vector Memory: Init + Load persisted data ───────────────
+    vector_memory_ = std::make_unique<VectorMemory>();
+#ifdef VISION_HAS_LLM
+    if (llm_controller_) {
+        vector_memory_->setEmbeddingFn(
+            [this](const std::string& text) -> std::vector<float> {
+                if (is_shutting_down_.load()) return {};
+                return llm_controller_->getEmbedding(text);
+            }
+        );
+    }
+#endif
+    // Load persisted memories
+    std::string mem_path = (fs::path(config_mgr_.getDataDir()) / "vector_memory.bin").string();
+    if (fs::exists(mem_path)) {
+        vector_memory_->load(mem_path);
+        LOG_INFO("Vector Memory loaded: {} entries", vector_memory_->size());
+    }
+
     emit statusReady("Ready | " + QString::fromStdString(profiler_.getStatusString()), "");
 }
 
@@ -585,9 +611,19 @@ void VisionAI::onSendCommand() {
             }
         }
         
-        // 4. Route to agent (if available)
-        // Inject screen context for screen-related queries
         std::string routed_command = command;
+
+        // Inject vector memory context
+        if (vector_memory_ && vector_memory_->size() > 0) {
+            std::string mem_ctx = vector_memory_->getRelevantContext(command, 3);
+            if (!mem_ctx.empty()) {
+                routed_command += "\n\n" + mem_ctx;
+                LOG_INFO("Injected vector memory context ({} entries)",
+                         vector_memory_->size());
+            }
+        }
+
+        // Inject screen context for screen-related queries
         if (screen_observer_ && screen_observer_->snapshotCount() > 0) {
             std::string lower = command;
             std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
@@ -605,6 +641,11 @@ void VisionAI::onSendCommand() {
             }
         }
         auto [success, result] = router_.route(routed_command);
+
+        // Store command+result in vector memory for future context
+        if (vector_memory_ && !command.empty()) {
+            vector_memory_->store(command, result, {"agent"});
+        }
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             last_response_ = result;
