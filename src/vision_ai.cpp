@@ -507,6 +507,29 @@ void VisionAI::loadModels() {
         LOG_INFO("Vector Memory loaded: {} entries", vector_memory_->size());
     }
 
+    // ── Confidence Scorer: Init with callbacks ──────────────────
+    confidence_scorer_ = std::make_unique<ConfidenceScorer>();
+    confidence_scorer_->setVectorMemory(vector_memory_.get());
+    confidence_scorer_->setAppListFn([this]() -> std::vector<std::string> {
+        return window_mgr_.getRunningAppNames();
+    });
+    confidence_scorer_->setTemplateScoreFn([this](const std::string& cmd) -> float {
+        auto match = template_matcher_.match(cmd);
+        return match ? match->confidence : 0.0f;
+    });
+
+    // ── HITL Timeout Timer (60s ghost state prevention) ────────
+    hitl_timeout_timer_ = new QTimer(this);
+    hitl_timeout_timer_->setSingleShot(true);
+    connect(hitl_timeout_timer_, &QTimer::timeout, this, [this]() {
+        if (confidence_scorer_ && confidence_scorer_->hasPending()) {
+            confidence_scorer_->clearPending();
+            addMessage("SYSTEM", "⏳ Request timed out. Operation cancelled.");
+            emit statusReady("Ready", "");
+        }
+    });
+    LOG_INFO("Confidence Scorer initialized");
+
     emit statusReady("Ready | " + QString::fromStdString(profiler_.getStatusString()), "");
 }
 
@@ -528,6 +551,37 @@ void VisionAI::onSendCommand() {
     }
     
     addMessage("You", command);
+
+    // ── HITL: Check if there's a pending action to resolve ──────
+    if (confidence_scorer_ && confidence_scorer_->hasPending()) {
+        hitl_timeout_timer_->stop();  // Cancel timeout
+
+        auto resolve = confidence_scorer_->tryResolve(command);
+        switch (resolve.result) {
+            case ConfidenceScorer::ResolveResult::Matched: {
+                // User confirmed — execute the resolved command
+                addMessage("SYSTEM", "✅ Confirmed. Executing: " + resolve.resolved_command);
+                command = resolve.resolved_command;
+                break;  // Fall through to normal execution
+            }
+            case ConfidenceScorer::ResolveResult::Bailout: {
+                addMessage("SYSTEM", "❌ Operation cancelled.");
+                emit statusReady("Ready", "");
+                return;
+            }
+            case ConfidenceScorer::ResolveResult::NoMatch: {
+                // Invalid option — re-ask
+                auto pending = confidence_scorer_->getPending();
+                if (pending) {
+                    addMessage("VISION", "❓ That didn't match. " + pending->clarification_question);
+                    hitl_timeout_timer_->start(60000);  // Restart timeout
+                }
+                return;
+            }
+            case ConfidenceScorer::ResolveResult::NoPending:
+                break;  // Expired, treat as new command
+        }
+    }
     
     // Track behavior
     behavior_.recordCommand(command, context_mgr_.getActiveApp().name);
@@ -611,6 +665,63 @@ void VisionAI::onSendCommand() {
             }
         }
         
+        // 4. Route to agent (if available)
+        // ── Confidence check before execution ─────────────────────
+        if (confidence_scorer_) {
+            auto conf = confidence_scorer_->score(command);
+
+            if (conf.requires_confirmation) {
+                // Build clarification for the user
+                PendingAction pending;
+                pending.original_command = command;
+                pending.confidence = conf;
+
+                if (conf.safety_blocked) {
+                    pending.clarification_question =
+                        "⚠️ This looks like a dangerous operation: \"" + command +
+                        "\". Type 'yes' to confirm or 'cancel' to abort.";
+                    pending.options = {"yes", "confirm", "do it", "haan"};
+                    pending.resolved_command = command;
+                } else {
+                    pending.clarification_question =
+                        conf.reason + " Please clarify or type 'cancel'.";
+                    pending.options = {};
+
+                    // If ambiguity — populate with running app names
+                    if (conf.ambiguity_penalty < 1.0f) {
+                        auto apps = window_mgr_.getRunningAppNames();
+                        pending.options = apps;
+                        pending.resolved_command = "{OPTION}";
+                        std::string option_list;
+                        for (size_t j = 0; j < apps.size(); j++) {
+                            if (j > 0) option_list += ", ";
+                            option_list += apps[j];
+                        }
+                        pending.clarification_question =
+                            "🤔 Multiple targets found: " + option_list +
+                            ". Which one?";
+                    }
+                }
+
+                confidence_scorer_->setPending(std::move(pending));
+                emit messageReady("VISION", QString::fromStdString(
+                    confidence_scorer_->getPending()->clarification_question));
+                emit statusReady("Waiting for confirmation...", "#FEE75C");
+
+                // Start 60s timeout (on UI thread)
+                QMetaObject::invokeMethod(hitl_timeout_timer_, "start",
+                    Qt::QueuedConnection, Q_ARG(int, 60000));
+                return;
+            }
+
+            // Medium confidence — execute with disclaimer
+            if (conf.level == ConfidenceLevel::Medium) {
+                emit messageReady("SYSTEM", QString::fromStdString(
+                    "⚡ Confidence: " + std::to_string((int)(conf.score * 100)) +
+                    "% — " + conf.reason));
+            }
+        }
+
         std::string routed_command = command;
 
         // Inject vector memory context

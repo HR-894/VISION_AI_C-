@@ -39,6 +39,7 @@
 #include "chat_widget.h"
 #include "screen_observer.h"
 #include "vector_memory.h"
+#include "confidence_scorer.h"
 
 #ifdef VISION_HAS_WHISPER
 #include "whisper_engine.h"
@@ -156,6 +157,10 @@ private:
 
     // Vector Memory (Flat Search + AVX2)
     std::unique_ptr<VectorMemory> vector_memory_;
+
+    // Confidence Scorer + HITL State Machine
+    std::unique_ptr<ConfidenceScorer> confidence_scorer_;
+    QTimer* hitl_timeout_timer_ = nullptr;  // 60s ghost state prevention
 
     // ── UI Widgets ───────────────────────────────────────────────
     ChatWidget* chat_widget_ = nullptr;
