@@ -67,8 +67,9 @@ std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command)
         
         LOG_INFO("Thought: {} | Action: {}", thought, action);
         
-        // Check for task completion
-        if (action == "task_complete" || action == "done" || action == "finish") {
+        // Check for task completion OR chat reply (1-step fast-exit)
+        if (action == "task_complete" || action == "done" || action == "finish" ||
+            action == "chat") {
             success = true;
             last_result = params.value("message",
                           thought.empty() ? "Task completed" : thought);
@@ -151,21 +152,28 @@ json ReActAgent::observe() {
 }
 
 std::optional<json> ReActAgent::think(const std::string& cmd, const json& ctx) {
-    // Build a dual-mode prompt: OS actions OR natural chat, always as JSON
-    std::string strict_cmd =
-        "[SYSTEM] You are VISION AI, a helpful native Windows desktop assistant. "
-        "You can execute OS commands OR chat naturally with the user. "
-        "You MUST strictly output ONLY valid JSON — no extra text. "
-        "To execute an OS command, output: {\"action\": \"<cmd_name>\", \"params\": {...}} "
-        "To chat, answer a question, greet, or if you cannot perform a task, output: "
-        "{\"action\": \"chat\", \"params\": {\"message\": \"your natural reply\"}} "
-        "Available actions: open_app, open_url, search_web, type_text, press_key, "
+    // Smart dual-mode prompt: AI Agent + Chat (inspired by HR-AI-MIND)
+    // The AI decides whether to execute an OS action or reply naturally.
+    std::string smart_prompt =
+        "You are VISION AI, a smart and friendly Windows desktop assistant. "
+        "You understand English, Hindi, and Hinglish — always match the user's language. "
+        "You have TWO modes:\n"
+        "MODE 1 — OS ACTION: For tasks like opening apps, searching, typing, taking screenshots, etc.\n"
+        "  Output: {\"action\": \"<action_name>\", \"params\": {<relevant_params>}}\n"
+        "MODE 2 — CHAT: For greetings, questions, conversations, explanations, or when you cannot perform a task.\n"
+        "  Output: {\"action\": \"chat\", \"params\": {\"message\": \"your natural reply\"}}\n\n"
+        "Available OS actions: open_app, open_url, search_web, type_text, press_key, "
         "click_element, scroll, set_volume, set_brightness, minimize, maximize, "
         "close_window, focus_window, screenshot, list_files, move_file, copy_file, "
-        "delete_file, clipboard_get, clipboard_set, task_complete, chat.\n\n"
-        "[USER TASK] " + cmd;
+        "delete_file, clipboard_get, clipboard_set, task_complete.\n\n"
+        "RULES:\n"
+        "1. ALWAYS output ONLY valid JSON — no extra text before or after.\n"
+        "2. If the user is chatting (hi, hello, how are you, what is X, etc.) use MODE 2.\n"
+        "3. If the user wants an OS action, use MODE 1.\n"
+        "4. Be smart, helpful, and conversational like a real assistant.\n\n"
+        "[USER] " + cmd;
 
-    return llm_.reactStep(strict_cmd, ctx, action_history_);
+    return llm_.reactStep(smart_prompt, ctx, action_history_);
 }
 
 std::pair<bool, std::string> ReActAgent::act(const json& plan) {
@@ -212,10 +220,10 @@ json ReActAgent::fallbackThink(const std::string& cmd) {
         }
     }
     
-    // Default: mark done with failure message
-    return {{"thought", "Unable to determine action"},
-            {"action", "task_complete"},
-            {"params", {{"message", "I couldn't understand that command. Try rephrasing."}}}};
+    // Default: route to chat instead of error — let the AI respond naturally
+    return {{"thought", "No template match — treating as conversation"},
+            {"action", "chat"},
+            {"params", {{"message", "I'm not sure how to do that as a system action, but I'll try to help! Could you tell me more about what you need?"}}}};
 }
 
 bool ReActAgent::isActionRepeated(const std::string& key) {

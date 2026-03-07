@@ -702,64 +702,31 @@ void VisionAI::onSendCommand() {
             }
         }
         
-        // 4. Route to agent (if available)
-        // ── Confidence check before execution ─────────────────────
+        // 4. Route to AI agent — the AI decides everything
+        // ── Safety-Only Gate: block truly dangerous operations ──────
+        // Only hard-block commands containing dangerous keywords (format, delete system32, etc.)
+        // Everything else goes directly to the ReAct agent which has full
+        // command+chat capability via its dual-mode system prompt.
         if (confidence_scorer_) {
             auto conf = confidence_scorer_->score(command);
-
-            if (conf.requires_confirmation) {
-                // Build clarification for the user
+            if (conf.safety_blocked) {
+                // Dangerous command — still require human confirmation
                 PendingAction pending;
                 pending.original_command = command;
                 pending.confidence = conf;
-
-                if (conf.safety_blocked) {
-                    pending.clarification_question =
-                        "⚠️ This looks like a dangerous operation: \"" + command +
-                        "\". Type 'yes' to confirm or 'cancel' to abort.";
-                    pending.options = {"yes", "confirm", "do it", "haan"};
-                    pending.resolved_command = command;
-                } else {
-                    pending.clarification_question =
-                        conf.reason + " Please clarify or type 'cancel'.";
-                    pending.options = {};
-
-                    // If ambiguity — populate with running app names
-                    if (conf.ambiguity_penalty < 1.0f) {
-                        auto windows = window_mgr_.listWindows();
-                        std::vector<std::string> apps;
-                        for (const auto& w : windows) {
-                            if (!w.exe_name.empty()) apps.push_back(w.exe_name);
-                        }
-                        pending.options = apps;
-                        pending.resolved_command = "{OPTION}";
-                        std::string option_list;
-                        for (size_t j = 0; j < apps.size(); j++) {
-                            if (j > 0) option_list += ", ";
-                            option_list += apps[j];
-                        }
-                        pending.clarification_question =
-                            "🤔 Multiple targets found: " + option_list +
-                            ". Which one?";
-                    }
-                }
+                pending.clarification_question =
+                    "⚠️ This looks like a dangerous operation: \"" + command +
+                    "\". Type 'yes' to confirm or 'cancel' to abort.";
+                pending.options = {"yes", "confirm", "do it", "haan"};
+                pending.resolved_command = command;
 
                 confidence_scorer_->setPending(std::move(pending));
                 emit messageReady("VISION", QString::fromStdString(
                     confidence_scorer_->getPending()->clarification_question));
                 emit statusReady("Waiting for confirmation...", "#FEE75C");
-
-                // Start 60s timeout (on UI thread)
                 QMetaObject::invokeMethod(hitl_timeout_timer_, "start",
                     Qt::QueuedConnection, Q_ARG(int, 60000));
                 return;
-            }
-
-            // Medium confidence — execute with disclaimer
-            if (conf.level == ConfidenceLevel::Medium) {
-                emit messageReady("SYSTEM", QString::fromStdString(
-                    "⚡ Confidence: " + std::to_string((int)(conf.score * 100)) +
-                    "% — " + conf.reason));
             }
         }
 
@@ -792,7 +759,14 @@ void VisionAI::onSendCommand() {
                          screen_observer_->snapshotCount());
             }
         }
-        auto [success, result] = router_.route(routed_command);
+        // Direct agent call — skip router (it re-runs matchers we already tried)
+#ifdef VISION_HAS_LLM
+        auto [success, result] = react_agent_
+            ? react_agent_->executeTask(routed_command)
+            : std::make_pair(false, std::string("AI agent not available. Try a simpler command."));
+#else
+        auto [success, result] = std::make_pair(false, std::string("AI not compiled in this build."));
+#endif
 
         // Store command+result in vector memory for future context
         if (vector_memory_ && !command.empty()) {

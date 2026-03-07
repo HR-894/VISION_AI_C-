@@ -200,13 +200,13 @@ std::optional<json> LLMController::reactStep(
     const json& observation,
     const std::vector<json>& history) {
 
-    std::string prompt = "You are a Windows AI assistant. "
-        "Respond with a JSON object containing 'thought' and 'action'.\n\n"
-        "Task: " + task + "\n\n"
-        "Current observation:\n" + observation.dump(2) + "\n\n";
+    // Build prompt using think()'s dual-mode system prompt as-is.
+    // DO NOT add another system prompt here — think() already includes one.
+    std::string prompt = task + "\n\n"
+        "Current state:\n" + observation.dump(2) + "\n\n";
 
     if (!history.empty()) {
-        // Strict sliding window: last 3 entries
+        // Strict sliding window: last 3 entries to save context
         std::vector<json> recent_history;
         int start_idx = std::max(0, (int)history.size() - 3);
         for (int i = start_idx; i < (int)history.size(); ++i) {
@@ -215,10 +215,7 @@ std::optional<json> LLMController::reactStep(
         prompt += "Recent actions:\n" + formatHistory(recent_history) + "\n\n";
     }
 
-    prompt += "Respond with ONLY a JSON object:\n"
-              "{\"thought\": \"your reasoning\", "
-              "\"action\": \"action_name\", "
-              "\"params\": {\"key\": \"value\"}}";
+    prompt += "Output ONLY valid JSON:";
 
     std::string response = generateResponse(prompt);
     if (response.empty()) return std::nullopt;
@@ -432,21 +429,24 @@ json LLMController::parseJsonStrict(const std::string& text) {
         catch (...) {}
     }
 
-    // ── Anti-Hallucination Fallback ──
-    LOG_WARN("LLM hallucinated plain text instead of JSON — wrapping as action");
+    // ── Anti-Hallucination Fallback → Chat Reply ──
+    // If LLM produced plain text instead of JSON, treat it as a natural
+    // language reply (like HR-AI-MIND) rather than an error.
+    LOG_WARN("LLM produced plain text — wrapping as chat reply");
 
     std::string trimmed = text;
     trimmed.erase(0, trimmed.find_first_not_of(" \t\r\n"));
     trimmed.erase(trimmed.find_last_not_of(" \t\r\n") + 1);
 
     if (trimmed.empty()) {
-        return {{"thought", "No response from LLM"}, {"action", "task_complete"},
-                {"params", {{"message", "Unable to process — no output"}}}};
+        return {{"thought", "No response from LLM"}, {"action", "chat"},
+                {"params", {{"message", "I'm thinking... could you rephrase that?"}}}};
     }
 
-    return {{"thought", "LLM produced plain text instead of JSON — safely completing task"},
-            {"action", "task_complete"},
-            {"params", {{"message", "I am unable to execute this command. " + trimmed}}}};
+    return {{"thought", "LLM replied naturally — delivering as chat"},
+            {"action", "chat"},
+            {"params", {{"message", trimmed}}}};
+
 }
 
 json LLMController::validateAndFill(json parsed) {
