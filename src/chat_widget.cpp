@@ -42,9 +42,29 @@ QVariant ChatMessageModel::data(const QModelIndex& index, int role) const {
         case TextRole:      return msg.text;
         case TimestampRole: return msg.timestamp;
         case TypeRole:      return static_cast<int>(msg.type);
-        case Qt::DisplayRole: return msg.text;  // Fallback for accessibility
+        case CopiedStateRole: return (index.row() < (int)copied_states_.size())
+                                     ? copied_states_[index.row()] : false;
+        case Qt::DisplayRole: return msg.text;
         default: return {};
     }
+}
+
+bool ChatMessageModel::setData(const QModelIndex& index, const QVariant& value, int role) {
+    if (!index.isValid() || index.row() >= (int)messages_.size())
+        return false;
+    if (role == CopiedStateRole) {
+        if (index.row() < (int)copied_states_.size()) {
+            copied_states_[index.row()] = value.toBool();
+            emit dataChanged(index, index, {CopiedStateRole});
+            return true;
+        }
+    }
+    return false;
+}
+
+Qt::ItemFlags ChatMessageModel::flags(const QModelIndex& index) const {
+    if (!index.isValid()) return Qt::NoItemFlags;
+    return Qt::ItemIsEnabled | Qt::ItemIsEditable;  // Editable enables editorEvent
 }
 
 void ChatMessageModel::addMessage(const QString& sender, const QString& text,
@@ -52,6 +72,7 @@ void ChatMessageModel::addMessage(const QString& sender, const QString& text,
     int row = static_cast<int>(messages_.size());
     beginInsertRows(QModelIndex(), row, row);
     messages_.push_back({sender, text, QDateTime::currentDateTime(), type});
+    copied_states_.push_back(false);
     endInsertRows();
 }
 
@@ -59,6 +80,7 @@ void ChatMessageModel::clear() {
     if (messages_.empty()) return;
     beginResetModel();
     messages_.clear();
+    copied_states_.clear();
     endResetModel();
 }
 
@@ -94,15 +116,74 @@ int ChatMessageDelegate::bubbleTextWidth(const QStyleOptionViewItem& option) con
 }
 
 int ChatMessageDelegate::calcTextHeight(const QString& text, int width) const {
-    // THE sizeHint() NIGHTMARE solved:
-    // QTextDocument handles word-wrapping perfectly — we give it
-    // the exact available width and it tells us the true height.
-    // This is the ONLY reliable way for multi-line variable-height items.
     QTextDocument doc;
     doc.setDefaultFont(messageFont());
     doc.setTextWidth(width);
     doc.setPlainText(text);
     return static_cast<int>(doc.size().height());
+}
+
+// ═══ SHARED GEOMETRY — used by BOTH paint() and editorEvent() ═══
+// If these go out of sync, clicks won't match the drawn icon!
+QRect ChatMessageDelegate::getCopyButtonRect(const QRect& bubbleRect) const {
+    return QRect(
+        bubbleRect.right() - kBubblePadding - kCopyBtnSize,
+        bubbleRect.top() + 4,
+        kCopyBtnSize, kCopyBtnSize
+    );
+}
+
+bool ChatMessageDelegate::editorEvent(QEvent* event, QAbstractItemModel* model,
+                                       const QStyleOptionViewItem& option,
+                                       const QModelIndex& index) {
+    if (event->type() != QEvent::MouseButtonPress)
+        return false;
+
+    auto* me = static_cast<QMouseEvent*>(event);
+
+    // Reconstruct bubble rect (same math as paint)
+    int viewWidth = option.rect.width();
+    int maxBubbleWidth = static_cast<int>(viewWidth * kMaxBubbleRatio);
+    auto type = static_cast<MessageType>(index.data(TypeRole).toInt());
+    bool isUser = (type == MessageType::User);
+
+    QString text = index.data(TextRole).toString();
+    QTextDocument doc;
+    doc.setDefaultFont(messageFont());
+    doc.setTextWidth(bubbleTextWidth(option));
+    doc.setPlainText(text);
+    int actualTextWidth = static_cast<int>(doc.idealWidth()) + 1;
+    int textHeight = static_cast<int>(doc.size().height());
+
+    int bubbleContentWidth = std::min(actualTextWidth + kAccentBarWidth + kTimestampWidth,
+                                       maxBubbleWidth - kBubblePadding * 2);
+    int totalBubbleWidth = bubbleContentWidth + kBubblePadding * 2;
+    int bubbleX = isUser ? (viewWidth - totalBubbleWidth - kBubbleMarginH)
+                         : kBubbleMarginH;
+    int bubbleY = option.rect.y() + kBubbleMarginV;
+    int bubbleHeight = kSenderHeight + kBubblePadding + textHeight + kBubblePadding;
+    QRect bubbleRect(bubbleX, bubbleY, totalBubbleWidth, bubbleHeight);
+
+    // Check if click is inside copy button area
+    QRect copyBtn = getCopyButtonRect(bubbleRect);
+    if (copyBtn.contains(me->pos())) {
+        // Copy to clipboard
+        QApplication::clipboard()->setText(text);
+
+        // Set "Copied ✓" state
+        model->setData(index, true, CopiedStateRole);
+
+        // Reset after 2 seconds
+        QPersistentModelIndex pIdx(index);
+        QTimer::singleShot(2000, [model, pIdx]() {
+            if (pIdx.isValid()) {
+                model->setData(pIdx, false, CopiedStateRole);
+            }
+        });
+
+        return true;  // Event consumed
+    }
+    return false;
 }
 
 QSize ChatMessageDelegate::sizeHint(const QStyleOptionViewItem& option,
@@ -198,12 +279,30 @@ void ChatMessageDelegate::paint(QPainter* painter,
     painter->drawText(senderRect, Qt::AlignLeft | Qt::AlignVCenter, sender);
 
     // ── Draw timestamp ──────────────────────────────────────────
-    QRect timeRect(bubbleRect.right() - kBubblePadding - kTimestampWidth,
+    QRect timeRect(bubbleRect.right() - kBubblePadding - kTimestampWidth - kCopyBtnSize - 4,
                    bubbleY + 6, kTimestampWidth, kSenderHeight);
     painter->setFont(timestampFont());
     painter->setPen(dimText_);
     QString timeStr = timestamp.toString("hh:mm");
     painter->drawText(timeRect, Qt::AlignRight | Qt::AlignVCenter, timeStr);
+
+    // ── Draw copy button (hover only, or "Copied ✓" feedback) ────
+    bool isCopied = index.data(CopiedStateRole).toBool();
+    QRect copyBtn = getCopyButtonRect(bubbleRect);
+
+    if (isCopied) {
+        // Green "Copied ✓" feedback
+        QFont copyFont = timestampFont();
+        copyFont.setBold(true);
+        painter->setFont(copyFont);
+        painter->setPen(QColor(87, 242, 135));  // #57F287 green
+        painter->drawText(copyBtn, Qt::AlignCenter, "✓");
+    } else if (isHovered) {
+        // Show copy icon on hover
+        painter->setFont(timestampFont());
+        painter->setPen(dimText_);
+        painter->drawText(copyBtn, Qt::AlignCenter, "📋");
+    }
 
     // ── Draw message text (with proper word-wrap) ───────────────
     // Use QTextDocument for pixel-perfect word-wrap rendering

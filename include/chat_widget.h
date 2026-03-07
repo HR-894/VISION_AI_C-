@@ -38,7 +38,8 @@ enum ChatRoles {
     SenderRole = Qt::UserRole + 1,
     TextRole,
     TimestampRole,
-    TypeRole
+    TypeRole,
+    CopiedStateRole   // bool: true = show "Copied ✓" for 2s
 };
 
 // ═══════════════════ Model ═══════════════════════════════════════════
@@ -50,6 +51,8 @@ public:
 
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
     QVariant data(const QModelIndex& index, int role) const override;
+    bool setData(const QModelIndex& index, const QVariant& value, int role) override;
+    Qt::ItemFlags flags(const QModelIndex& index) const override;
 
     void addMessage(const QString& sender, const QString& text,
                     MessageType type = MessageType::AI);
@@ -57,6 +60,7 @@ public:
 
 private:
     std::vector<ChatMessage> messages_;
+    std::vector<bool> copied_states_;  // per-message "Copied ✓" flag
 };
 
 // ═══════════════════ Delegate ════════════════════════════════════════
@@ -72,16 +76,22 @@ public:
     QSize sizeHint(const QStyleOptionViewItem& option,
                    const QModelIndex& index) const override;
 
+    /// Handle click on copy button (coordinate geometry check)
+    bool editorEvent(QEvent* event, QAbstractItemModel* model,
+                     const QStyleOptionViewItem& option,
+                     const QModelIndex& index) override;
+
 private:
     // Layout constants
     static constexpr int kBubblePadding = 14;
-    static constexpr int kBubbleMarginH = 16;     // Horizontal margin from edges
-    static constexpr int kBubbleMarginV = 4;       // Vertical gap between bubbles
-    static constexpr int kAccentBarWidth = 3;      // Left color bar for AI messages
-    static constexpr int kSenderHeight = 20;       // Sender name line height
-    static constexpr int kTimestampWidth = 50;     // Space reserved for timestamp
-    static constexpr int kBubbleRadius = 10;       // Corner radius
-    static constexpr double kMaxBubbleRatio = 0.78; // Max bubble width = 78% of view
+    static constexpr int kBubbleMarginH = 16;
+    static constexpr int kBubbleMarginV = 4;
+    static constexpr int kAccentBarWidth = 3;
+    static constexpr int kSenderHeight = 20;
+    static constexpr int kTimestampWidth = 50;
+    static constexpr int kBubbleRadius = 10;
+    static constexpr int kCopyBtnSize = 22;       // Copy button hit area
+    static constexpr double kMaxBubbleRatio = 0.78;
 
     // Colors
     QColor bgAI_      = QColor(43, 45, 49);    // #2b2d31
@@ -99,6 +109,9 @@ private:
     QFont timestampFont() const;
     int bubbleTextWidth(const QStyleOptionViewItem& option) const;
     int calcTextHeight(const QString& text, int width) const;
+
+    /// Shared geometry for copy button — used by BOTH paint() and editorEvent()
+    QRect getCopyButtonRect(const QRect& bubbleRect) const;
 };
 
 // ═══════════════════ Widget ═════════════════════════════════════════
