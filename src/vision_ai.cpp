@@ -199,6 +199,9 @@ VisionAI::~VisionAI() {
     timedJoin(audio_thread_, 2000);
 #endif
 
+    // Stop Screen Observer (before destroying OCR engine)
+    if (screen_observer_) screen_observer_->stop();
+
     // STEP 4: Unregister hotkeys
     if (hotkey_registered_) {
         UnregisterHotKey((HWND)winId(), hotkey_id_);
@@ -218,6 +221,7 @@ VisionAI::~VisionAI() {
     audio_capture_.reset();
     whisper_engine_.reset();
 #endif
+    screen_observer_.reset();  // After OCR shutdown
     // Stack members (router_, template_matcher_, etc.) destroyed by
     // compiler-generated destructor in reverse declaration order.
     // ═══════════════════════════════════════════════════════════════
@@ -451,6 +455,32 @@ void VisionAI::loadModels() {
     idle_timer_->start(60000);  // Check every 60 seconds
 #endif
 
+    // ── Screen Awareness: Start Lazy Observer ────────────────────
+    screen_observer_ = std::make_unique<ScreenObserver>();
+#ifdef VISION_HAS_OCR
+    // Wire OCR callback — reuses ActionExecutor's persistent Tesseract (B1 fix)
+    if (action_executor_ && action_executor_->isOCRAvailable()) {
+        screen_observer_->start(
+            [this](const uint8_t* bgra, int w, int h) -> std::string {
+                if (is_shutting_down_.load()) return "";
+                // Convert BGRA → cv::Mat for Tesseract
+                cv::Mat img(h, w, CV_8UC4, const_cast<uint8_t*>(bgra));
+                cv::Mat bgr;
+                cv::cvtColor(img, bgr, cv::COLOR_BGRA2BGR);
+                auto result = action_executor_->runOCR(bgr, true);
+                return result.valid ? result.full_text : "";
+            },
+            500  // Poll every 500ms
+        );
+        LOG_INFO("Screen Observer started (DXGI + pHash + OCR-on-delta)");
+    } else {
+        // No OCR — start without callback (just captures hashes for change detection)
+        LOG_WARN("Screen Observer: No OCR available, running in hash-only mode");
+    }
+#else
+    LOG_WARN("Screen Observer: OCR not compiled, running in hash-only mode");
+#endif
+
     emit statusReady("Ready | " + QString::fromStdString(profiler_.getStatusString()), "");
 }
 
@@ -556,7 +586,25 @@ void VisionAI::onSendCommand() {
         }
         
         // 4. Route to agent (if available)
-        auto [success, result] = router_.route(command);
+        // Inject screen context for screen-related queries
+        std::string routed_command = command;
+        if (screen_observer_ && screen_observer_->snapshotCount() > 0) {
+            std::string lower = command;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            if (lower.find("screen") != std::string::npos ||
+                lower.find("see") != std::string::npos ||
+                lower.find("looking at") != std::string::npos ||
+                lower.find("display") != std::string::npos ||
+                lower.find("read") != std::string::npos ||
+                lower.find("what's on") != std::string::npos ||
+                lower.find("notification") != std::string::npos) {
+                std::string ctx = screen_observer_->getContextText(3);
+                routed_command = command + "\n\n" + ctx;
+                LOG_INFO("Injected screen context ({} snapshots)",
+                         screen_observer_->snapshotCount());
+            }
+        }
+        auto [success, result] = router_.route(routed_command);
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             last_response_ = result;

@@ -37,6 +37,7 @@
 #include "fast_complex_handler.h"
 #include "command_router.h"
 #include "chat_widget.h"
+#include "screen_observer.h"
 
 #ifdef VISION_HAS_WHISPER
 #include "whisper_engine.h"
@@ -148,6 +149,9 @@ private:
     std::atomic<bool> recording_{false};
     std::thread audio_thread_;  // Stored for safe shutdown (not detached)
 #endif
+
+    // Screen Awareness (Lazy Observer)
+    std::unique_ptr<ScreenObserver> screen_observer_;
 
     // ── UI Widgets ───────────────────────────────────────────────
     ChatWidget* chat_widget_ = nullptr;

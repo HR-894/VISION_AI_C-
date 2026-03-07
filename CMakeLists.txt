@@ -183,6 +183,7 @@ set(VISION_HEADERS
     include/model_downloader_wizard.h
     include/ui_automation.h
     include/chat_widget.h
+    include/screen_observer.h
     include/vision_ai.h
 )
 
@@ -206,6 +207,7 @@ set(VISION_SOURCES
     src/ui_automation.cpp
     src/vision_ai.cpp
     src/chat_widget.cpp
+    src/screen_observer.cpp
 )
 
 # Conditional AI sources
