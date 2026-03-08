@@ -318,6 +318,13 @@ std::string WindowManager::takeScreenshot(const std::string& save_path) {
     HDC screenDC = GetDC(nullptr);
     HDC memDC = CreateCompatibleDC(screenDC);
     HBITMAP bmp = CreateCompatibleBitmap(screenDC, screenW, screenH);
+    
+    // BUG 15 FIX: Ensure GDI handles are cleaned up even if we throw/return early
+    struct GDICleaner {
+        HBITMAP b; HDC m; HDC s;
+        ~GDICleaner() { DeleteObject(b); DeleteDC(m); ReleaseDC(nullptr, s); }
+    } cleaner{bmp, memDC, screenDC};
+
     HGDIOBJ oldBmp = SelectObject(memDC, bmp);
 
     BitBlt(memDC, 0, 0, screenW, screenH, screenDC, screenX, screenY, SRCCOPY);
@@ -394,10 +401,7 @@ std::string WindowManager::takeScreenshot(const std::string& save_path) {
         result_msg = "ERROR: Failed to create GDI+ Bitmap from HBITMAP";
     }
 
-    // Cleanup GDI objects (but NOT GdiplusShutdown — that's in the destructor)
-    DeleteObject(bmp);
-    DeleteDC(memDC);
-    ReleaseDC(nullptr, screenDC);
+    // Cleanup GDI objects is now handled automatically by GDICleaner RAII struct
 
     return result_msg;
 }
@@ -689,6 +693,11 @@ bool WindowManager::waitForInputReady(HWND hwnd, float timeout) {
 
     auto start = std::chrono::steady_clock::now();
 
+    // BUG 14 FIX: Check UIAutomation status ONCE outside the hot loop
+    // Prevents CoInitialize and COM creation from running every 50ms
+    UIAutomation uia_checker;
+    bool uia_available = uia_checker.isAvailable();
+
     while (true) {
         float elapsed = std::chrono::duration<float>(
             std::chrono::steady_clock::now() - start).count();
@@ -712,10 +721,8 @@ bool WindowManager::waitForInputReady(HWND hwnd, float timeout) {
         }
 
         // Method 2: Fallback to UI Automation keyboard focus check
-        // FIX B2: Use function-scoped pointer instead of static to avoid
-        // COM destruction after main() exit
-        UIAutomation uia_checker;
-        if (uia_checker.isAvailable()) {
+        // Using the instance created outside the loop
+        if (uia_available) {
             auto elem = uia_checker.findElement("");  // Any focused element
             // Even if findElement returns nothing, the fact that UIA is responsive
             // combined with the window being foreground is a good signal

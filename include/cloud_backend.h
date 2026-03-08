@@ -49,19 +49,19 @@ public:
 
     // ── Cloud-specific configuration (thread-safe) ───────────────
     void setModel(const std::string& model) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         model_ = model;
     }
     void setTemperature(float temp) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         temperature_ = temp;
     }
     void setMaxTokens(int tokens) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         max_tokens_ = tokens;
     }
     void setApiKey(const std::string& key) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         // Securely overwrite old key before replacing
         if (!api_key_.empty()) {
             volatile char* p = &api_key_[0];
@@ -70,7 +70,7 @@ public:
         api_key_ = key;
     }
     void setEndpoint(const std::string& url) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         endpoint_ = url;
     }
 
@@ -88,7 +88,7 @@ private:
 
     bool initialized_ = false;
     std::atomic<bool> cancel_{false};
-    mutable std::mutex mutex_;
+    mutable std::recursive_mutex mutex_;
 
     // ── Internal helpers ─────────────────────────────────────────
     std::string buildRequestJson(const std::string& prompt,

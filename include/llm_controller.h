@@ -99,6 +99,11 @@ public:
     /// Check idle timer and auto-unload (local backend only)
     void checkIdleUnload();
 
+    /// Enable/disable automatic backend failover
+    void enableFailover(bool enabled) { failover_enabled_ = enabled; }
+    bool isFailoverEnabled() const { return failover_enabled_; }
+    int getFailoverCount() const { return failover_count_; }
+
     // ═══════════════════ NEW Dual-Engine API ═══════════════════════
 
     /// Switch the active inference backend
@@ -164,7 +169,7 @@ private:
     int cache_ttl_seconds_ = 60;
 
     // ── Async generation tracking ────────────────────────────────
-    std::future<std::string> async_future_;  // Track outstanding async work
+    std::shared_future<std::string> async_future_;  // Track outstanding async work
 
     // ── Internal helpers (shared across backends) ────────────────
     std::string generateResponse(const std::string& prompt);
@@ -173,6 +178,15 @@ private:
     std::string formatHistory(const std::vector<nlohmann::json>& history);
     size_t hashPrompt(const std::string& prompt) const;
     std::string canonicalCacheKey(const std::string& prompt) const;  // B5: semantic cache
+    std::string tryFailover(const std::string& prompt);              // Auto-failover
+    void pruneConversation();                                         // Session pruning
+
+    // ── Failover state ──────────────────────────────────────────
+    bool failover_enabled_ = true;     // Auto-switch on backend failure
+    int failover_count_ = 0;           // Number of failovers in this session
+    
+    // ── Session pruning ─────────────────────────────────────────
+    int max_conversation_messages_ = 20; // Auto-prune beyond this
 
     // ── Cache helpers ───────────────────────────────────────────
     std::optional<std::string> getCachedResponse(const std::string& prompt);

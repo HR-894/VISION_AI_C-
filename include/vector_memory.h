@@ -40,7 +40,7 @@ struct MemoryEntry {
 struct MemorySearchResult {
     int index;
     float similarity;
-    const MemoryEntry* entry;  // Non-owning pointer (valid while locked)
+    MemoryEntry entry;  // BUG 7 FIX: Return by value to prevent dangling pointer 
 };
 
 // ═══════════════════ Vector Memory ═══════════════════════════════════

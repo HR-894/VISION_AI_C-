@@ -239,6 +239,7 @@ if(VISION_ENABLE_LLM)
         src/llm_controller.cpp
         src/react_agent.cpp
         src/action_executor.cpp
+        src/doctor.cpp
     )
 endif()
 
@@ -342,7 +343,7 @@ target_compile_definitions(VISION_AI PRIVATE
 )
 
 if(MSVC)
-    target_compile_options(VISION_AI PRIVATE /W4 /utf-8 /permissive-)
+    target_compile_options(VISION_AI PRIVATE /W4 /utf-8 /permissive- /EHa)
 else()
     target_compile_options(VISION_AI PRIVATE -Wall -Wextra -Wpedantic)
 endif()

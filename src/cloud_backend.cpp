@@ -50,7 +50,7 @@ CloudBackend::~CloudBackend() {
 
 bool CloudBackend::initialize() {
 #ifdef VISION_HAS_CLOUD
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (initialized_) return true;
 
     // Global curl init — must only happen ONCE per process (thread-safe)
@@ -83,7 +83,7 @@ bool CloudBackend::initialize() {
 
 void CloudBackend::shutdown() {
 #ifdef VISION_HAS_CLOUD
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (curl_) {
         curl_easy_cleanup(curl_);
         curl_ = nullptr;
@@ -102,7 +102,7 @@ bool CloudBackend::isReady() const {
 std::string CloudBackend::generate(const std::string& prompt,
                                    const std::vector<Message>& history) {
 #ifdef VISION_HAS_CLOUD
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!initialized_ && !initialize()) return "";
 
     cancel_ = false;

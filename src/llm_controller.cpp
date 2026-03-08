@@ -138,6 +138,10 @@ std::string LLMController::generateResponse(const std::string& prompt) {
     // Initialize if needed
     if (!active_backend_->isReady() && !active_backend_->initialize()) {
         LOG_ERROR("LLMController: Failed to initialize active backend");
+        // FAILOVER: Try the other backend if primary can't even initialize
+        if (failover_enabled_) {
+            return tryFailover(prompt);
+        }
         return "";
     }
 
@@ -160,6 +164,12 @@ std::string LLMController::generateResponse(const std::string& prompt) {
     // Delegate to the active backend with conversation context
     std::string result = active_backend_->generate(prompt, conversation_);
 
+    // FAILOVER: If primary backend returned nothing, try the other one
+    if (result.empty() && failover_enabled_) {
+        LOG_WARN("LLMController: Active backend returned empty — attempting failover");
+        result = tryFailover(prompt);
+    }
+
     if (!result.empty()) {
         std::lock_guard<std::mutex> clock(cache_mutex_);
         cache_[cache_key] = {result, std::chrono::steady_clock::now()};
@@ -170,6 +180,41 @@ std::string LLMController::generateResponse(const std::string& prompt) {
         }
     }
 
+    return result;
+}
+
+std::string LLMController::tryFailover(const std::string& prompt) {
+    // Determine the fallback backend
+    IAIBackend* fallback = nullptr;
+    BackendType fallback_type = BackendType::Local;
+    
+    if (active_type_ == BackendType::Local && cloud_backend_) {
+        fallback = cloud_backend_.get();
+        fallback_type = BackendType::Cloud;
+    } else if (active_type_ == BackendType::Cloud && local_backend_) {
+        fallback = local_backend_.get();
+        fallback_type = BackendType::Local;
+    }
+    
+    if (!fallback) return "";
+    
+    // Try to initialize the fallback if not ready
+    if (!fallback->isReady() && !fallback->initialize()) {
+        LOG_ERROR("LLMController: Failover backend also failed to initialize");
+        return "";
+    }
+    
+    LOG_INFO("LLMController: Failing over from {} to {}",
+             active_type_ == BackendType::Local ? "Local" : "Cloud",
+             fallback_type == BackendType::Local ? "Local" : "Cloud");
+    
+    std::string result = fallback->generate(prompt, conversation_);
+    
+    if (!result.empty()) {
+        failover_count_++;
+        LOG_INFO("LLMController: Failover successful (count: {})", failover_count_);
+    }
+    
     return result;
 }
 
@@ -331,23 +376,37 @@ BackendType LLMController::getActiveBackend() const {
 }
 
 std::future<std::string> LLMController::generateResponseAsync(const std::string& prompt) {
-    // FIX C1: Wait for any previous async work before launching new one
+    // FIX BUG 9 (corrected): Truly async generation.
+    // Wait for any in-flight work before launching a new task.
     if (async_future_.valid()) {
         try { async_future_.wait(); } catch (...) {}
     }
-    // Store future so destructor can wait on it (prevents use-after-free)
-    async_future_ = std::async(std::launch::async, [this, prompt]() {
-        return generateResponse(prompt);
-    });
-    return std::async(std::launch::async, [this]() {
-        if (async_future_.valid()) return async_future_.get();
-        return std::string{};
-    });
+    
+    // Use a shared promise so both the caller and the destructor can observe completion.
+    auto promise = std::make_shared<std::promise<std::string>>();
+    std::future<std::string> caller_future = promise->get_future();
+    
+    // Launch the actual work thread. Store a shared_future so the destructor
+    // can safely wait on it via async_future_.wait().
+    async_future_ = std::async(std::launch::async, [this, prompt, promise]() {
+        std::string result;
+        try {
+            result = generateResponse(prompt);
+        } catch (...) {
+            promise->set_exception(std::current_exception());
+            return result;
+        }
+        promise->set_value(result);
+        return result;
+    }).share();  // .share() converts future → shared_future for safe destructor wait
+    
+    return caller_future;
 }
 
 void LLMController::addUserMessage(const std::string& content) {
     std::lock_guard<std::recursive_mutex> lock(llm_mutex_);
     conversation_.emplace_back("user", content);
+    pruneConversation();  // Auto-prune when conversation grows too long
 }
 
 void LLMController::addAssistantMessage(const std::string& content) {
@@ -375,6 +434,51 @@ void LLMController::clearConversation() {
     if (!system_prompt_.empty()) {
         conversation_.emplace_back("system", system_prompt_);
     }
+}
+
+void LLMController::pruneConversation() {
+    // Must be called while holding llm_mutex_
+    int total = (int)conversation_.size();
+    if (total <= max_conversation_messages_) return;
+    
+    // Find where non-system messages start
+    int start = 0;
+    if (!conversation_.empty() && conversation_[0].role == "system") {
+        start = 1;  // Skip system prompt
+    }
+    
+    int non_system_count = total - start;
+    if (non_system_count <= max_conversation_messages_) return;
+    
+    // How many messages to summarize (keep last 8 messages intact)
+    int keep_recent = std::min(8, non_system_count);
+    int summarize_count = non_system_count - keep_recent;
+    
+    if (summarize_count <= 0) return;
+    
+    // Build a compact summary of the old messages (capped to avoid unbounded growth)
+    std::string summary = "[Conversation summary: ";
+    int summary_limit = std::min(summarize_count, 10);  // Only summarize up to 10 msgs explicitly
+    for (int i = start; i < start + summary_limit; i++) {
+        const auto& msg = conversation_[i];
+        std::string snippet = msg.content.substr(0, 50);
+        if (msg.content.size() > 50) snippet += "...";
+        summary += msg.role + ": " + snippet + " | ";
+    }
+    if (summarize_count > summary_limit) {
+        summary += "...and " + std::to_string(summarize_count - summary_limit) + " more messages";
+    }
+    summary += "]";
+    
+    // Erase the old messages and insert the summary
+    conversation_.erase(
+        conversation_.begin() + start,
+        conversation_.begin() + start + summarize_count
+    );
+    conversation_.insert(conversation_.begin() + start, Message("system", summary));
+    
+    LOG_INFO("LLMController: Pruned conversation from {} to {} messages (summarized {} old messages)",
+             total, conversation_.size(), summarize_count);
 }
 
 // ── Cloud-specific configuration ─────────────────────────────────

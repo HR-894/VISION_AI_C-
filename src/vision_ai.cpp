@@ -5,6 +5,7 @@
 
 #include "vision_ai.h"
 #include "settings_dialog.h"
+#include "doctor.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QSplitter>
@@ -31,6 +32,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <iomanip>
+#include <eh.h>       // _set_se_translator: converts SEH → C++ exceptions
 
 #ifdef VISION_HAS_SPDLOG
 #include <spdlog/spdlog.h>
@@ -170,34 +172,18 @@ VisionAI::~VisionAI() {
     }
 #endif
 
-    // STEP 3: Join all background threads.
-    // Use a helper lambda with timeout to avoid infinite hangs.
-    auto timedJoin = [](std::thread& t, int timeout_ms) {
-        if (!t.joinable()) return;
-        // We can't do timed-join on std::thread natively,
-        // so we try join() and trust that our cancel signals above
-        // have unblocked the threads. If a thread is truly stuck,
-        // detach it as a last resort (better than hanging the app).
-        std::atomic<bool> done{false};
-        std::thread waiter([&]() { t.join(); done = true; });
-        auto start = std::chrono::steady_clock::now();
-        while (!done.load()) {
-            if (std::chrono::steady_clock::now() - start > std::chrono::milliseconds(timeout_ms)) {
-                waiter.detach();  // Give up waiting — thread is stuck
-                t.detach();       // Prevent std::terminate on destroyed joinable thread
-                return;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
-        if (waiter.joinable()) waiter.join();
-    };
-
-    timedJoin(model_load_thread_, 5000);  // Model loading: 5s max
-    timedJoin(cmd_thread_, 3000);          // Command processing: 3s max
+    // STEP 3: Join all background threads safely.
+    // Because we just called cancelGeneration() and is_shutting_down_=true,
+    // all background threads will abort and exit their loops almost instantly.
+    // We can do a normal, blocking join() here. Do NOT detach the threads, 
+    // as detaching a class member thread immediately before the class is 
+    // destroyed causes fatal Use-After-Free crashes and std::terminate().
+    if (model_load_thread_.joinable()) model_load_thread_.join();
+    if (cmd_thread_.joinable())        cmd_thread_.join();
 
 #ifdef VISION_HAS_WHISPER
     if (audio_capture_) audio_capture_->stopRecording();  // Stop mic stream
-    timedJoin(audio_thread_, 2000);
+    if (audio_thread_.joinable())      audio_thread_.join();
 #endif
 
     // Stop Screen Observer (before destroying OCR engine)
@@ -421,7 +407,11 @@ void VisionAI::loadModels() {
 #endif
     
 #ifdef VISION_HAS_LLM
-    llm_controller_ = std::make_unique<LLMController>();
+    // [FIX] Read the saved model path from config so the local backend actually
+    // finds the GGUF file the user selected in Settings, instead of searching
+    // for a default that doesn't exist on fresh installs.
+    std::string saved_model_path = config_.getNested<std::string>("llm.model_path", "");
+    llm_controller_ = std::make_unique<LLMController>(saved_model_path);
 
     // ── Restore saved API key from encrypted config ──────────────
     // The SettingsDialog stores the key as DPAPI-encrypted Base64.
@@ -523,12 +513,18 @@ void VisionAI::loadModels() {
     vector_memory_ = std::make_unique<VectorMemory>();
 #ifdef VISION_HAS_LLM
     if (llm_controller_) {
+        // [OOM FIX] Disabled auto-embeddings for VectorMemory
+        // Generating embeddings forces the local GGUF model to load into memory.
+        // On 8GB RAM machines, this instantly causes an Out-Of-Memory (OOM) silent
+        // crash right after a command executes or right before a chat reply.
+        /*
         vector_memory_->setEmbeddingFn(
             [this](const std::string& text) -> std::vector<float> {
                 if (is_shutting_down_.load()) return {};
                 return llm_controller_->getEmbeddings(text);
             }
         );
+        */
     }
 #endif
     // Load persisted memories
@@ -623,12 +619,88 @@ void VisionAI::onSendCommand() {
     // Track behavior
     behavior_.recordCommand(command, context_mgr_.getActiveApp().name);
     
-    // FIX C6: Don't block the UI thread with join() — if an LLM call takes
-    // 30+ seconds, the entire GUI would freeze. Instead, detach old thread.
+    // ── Slash commands (instant, no background thread needed) ────
+    if (!command.empty() && command[0] == '/') {
+        std::string lower_cmd = command;
+        std::transform(lower_cmd.begin(), lower_cmd.end(), lower_cmd.begin(), ::tolower);
+        
+        if (lower_cmd == "/doctor" || lower_cmd == "/health") {
+#ifdef VISION_HAS_LLM
+            std::string model_path = config_.getNested<std::string>("llm.model_path", "");
+            std::string whisper_path = config_.getNested<std::string>("whisper.model_path", "");
+            std::string api_key = config_.getNested<std::string>("cloud.api_key", "");
+            bool local_loaded = llm_controller_ ? llm_controller_->isModelLoaded() : false;
+            bool cloud_init = false;
+            int gpu_layers = config_.getNested<int>("llm.gpu_layers", 0);
+            size_t mem_entries = 0;
+            size_t conv_size = llm_controller_ ? llm_controller_->getConversation().size() : 0;
+            
+            std::string report = Doctor::runFullDiagnostic(
+                model_path, whisper_path, api_key, "",
+                local_loaded, cloud_init, gpu_layers, mem_entries, conv_size
+            );
+            addMessage("DOCTOR", report);
+#else
+            addMessage("DOCTOR", "LLM module not compiled. Doctor requires VISION_HAS_LLM.");
+#endif
+            emit statusReady("Ready", "");
+            return;
+        }
+        
+        if (lower_cmd == "/status") {
+#ifdef VISION_HAS_LLM
+            std::string status = "=== VISION AI Status ===\n";
+            status += "Backend: " + std::string(llm_controller_ ? 
+                (llm_controller_->getActiveBackend() == BackendType::Local ? "Local (llama.cpp)" : "Cloud (Groq)") : "N/A") + "\n";
+            status += "Model loaded: " + std::string(llm_controller_ && llm_controller_->isModelLoaded() ? "Yes" : "No") + "\n";
+            status += "Failover: " + std::string(llm_controller_ && llm_controller_->isFailoverEnabled() ? "Enabled" : "Disabled") + "\n";
+            status += "Failover count: " + std::to_string(llm_controller_ ? llm_controller_->getFailoverCount() : 0) + "\n";
+            status += "Conversation: " + std::to_string(llm_controller_ ? llm_controller_->getConversation().size() : 0) + " messages";
+            addMessage("STATUS", status);
+#else
+            addMessage("STATUS", "LLM module not compiled.");
+#endif
+            emit statusReady("Ready", "");
+            return;
+        }
+        
+        if (lower_cmd == "/clear") {
+#ifdef VISION_HAS_LLM
+            if (llm_controller_) llm_controller_->clearConversation();
+            addMessage("SYSTEM", "Conversation cleared.");
+#endif
+            emit statusReady("Ready", "");
+            return;
+        }
+    }
+    
+    // FIX C6: To prevent UI freezing while preventing fatal Use-After-Free
+    // crashes, DO NOT detach the thread! Detached threads access `this` after
+    // it's destroyed or run concurrently, corrupting sqlite3/memory.
+    // Instead, actively cancel the old LLM generation — it will exit within
+    // milliseconds, allowing a fast, safe join() before starting the new command.
     if (cmd_thread_.joinable()) {
-        cmd_thread_.detach();  // Let old task finish in background
+#ifdef VISION_HAS_LLM
+        if (llm_controller_) {
+            llm_controller_->cancelGeneration();
+        }
+#endif
+        cmd_thread_.join();
     }
     cmd_thread_ = std::thread([this, command]() {
+      // Convert Windows SEH (access violations from llama.cpp) into C++ exceptions
+      // so they're caught by catch(...) below instead of killing the process.
+      // _set_se_translator is per-thread and MSVC-compatible with C++ destructors.
+      _set_se_translator([](unsigned int code, EXCEPTION_POINTERS*) {
+          throw std::runtime_error(
+              "Access violation in AI engine (SEH code: 0x" +
+              ([code]() -> std::string {
+                  char buf[16];
+                  snprintf(buf, sizeof(buf), "%08X", code);
+                  return buf;
+              })() + "). Try switching to Cloud backend or restart.");
+      });
+      try {
         // FIX B6: Check shutdown flag before touching any member
         if (is_shutting_down_.load()) return;
         emit statusReady("Processing...", "#FFD700");
@@ -655,6 +727,10 @@ void VisionAI::onSendCommand() {
         if (chained.size() > 1) {
             std::string combined_result;
             for (const auto& match : chained) {
+                // FIX B4: Check shutdown flag inside chained macros to prevent
+                // app destruction wait hangs
+                if (is_shutting_down_.load()) return;
+                
                 auto result = instantExecute(match.template_name + " " +
                     [&]() {
                         std::string vars;
@@ -780,7 +856,18 @@ void VisionAI::onSendCommand() {
         emit statusReady("Ready", "");
         context_mgr_.recordCommand(command, result);
         agent_memory_.recordTask(command, result, success, {"agent"});
-        
+
+      } catch (const std::exception& e) {
+          LOG_ERROR("Background thread crashed: {}", e.what());
+          emit messageReady("SYSTEM", QString::fromStdString(
+              "\u274c Error executing command: " + std::string(e.what())));
+          emit statusReady("Ready", "");
+      } catch (...) {
+          LOG_ERROR("Background thread crashed with unknown exception");
+          emit messageReady("SYSTEM",
+              "\u274c Unknown critical error occurred in background thread.");
+          emit statusReady("Ready", "");
+      }
     });
 }
 

@@ -1,0 +1,40 @@
+[2026-03-08 11:18:07.923] [info] [VISION_AI] VISION AI v3.0.0 starting...
+[2026-03-08 11:18:11.036] [info] [VISION_AI] Device tier: low
+[2026-03-08 11:18:27.183] [info] [VISION_AI] Device tier: low
+[2026-03-08 11:18:27.221] [info] [VISION_AI] Config loaded from P:\VISION AI C++\build\bin\Release\data\vision_config.json
+[2026-03-08 11:18:27.223] [info] [VISION_AI] Config loaded from P:\VISION AI C++\build\bin\Release\data\vision_config.json
+[2026-03-08 11:18:29.048] [info] [VISION_AI] LLM model found — skipping download wizard
+[2026-03-08 11:18:31.169] [info] [VISION_AI] Device tier: low
+[2026-03-08 11:18:31.172] [info] [VISION_AI] WindowManager initialized (GDI+ ready)
+[2026-03-08 11:18:31.181] [info] [VISION_AI] Config loaded from P:\VISION AI C++\build\bin\Release\data\vision_config.json
+[2026-03-08 11:18:31.419] [info] [VISION_AI] Global hotkey registered: Ctrl+Alt+Space
+[2026-03-08 11:18:31.419] [warning] [VISION_AI] Failed to register kill switch Ctrl+Esc (err=1409)
+[2026-03-08 11:18:31.420] [info] [VISION_AI] Device: Tier: low | CPU: AMD Ryzen 3 2200U with Radeon Vega Mobile Gfx   | RAM: 7075MB | GPU: AMD Radeon(TM) Vega 3 Graphics (1024MB)
+[2026-03-08 11:18:31.421] [info] [VISION_AI] Whisper model found: models/ggml-base.bin
+[2026-03-08 11:18:33.271] [info] [VISION_AI] Whisper model loaded: tiny (models/ggml-base.bin)
+[2026-03-08 11:18:33.271] [info] [VISION_AI] Whisper loaded: Whisper tiny (loaded)
+[2026-03-08 11:18:33.273] [info] [VISION_AI] LLMController: Dual-engine initialized (Local: 0 | Cloud: 0)
+[2026-03-08 11:18:33.275] [info] [VISION_AI] Cloud API key restored from encrypted config
+[2026-03-08 11:18:33.276] [info] [VISION_AI] LLMController: Switching backend from Local to Cloud
+[2026-03-08 11:18:33.276] [info] [VISION_AI] LLMController: Shutting down old backend to free resources...
+[2026-03-08 11:18:33.276] [info] [VISION_AI] LocalBackend: VRAM/RAM released — model + backend freed
+[2026-03-08 11:18:33.282] [info] [VISION_AI] CloudBackend initialized: model=llama-3.3-70b-versatile, endpoint=https://api.groq.com/openai/v1/chat/completions
+[2026-03-08 11:18:33.282] [info] [VISION_AI] LLMController: Backend switch complete. Conversation (0 messages) translated and preserved.
+[2026-03-08 11:18:33.282] [info] [VISION_AI] Engine mode restored: Cloud
+[2026-03-08 11:18:33.282] [info] [VISION_AI] LLM config: context=2048, threads=2
+[2026-03-08 11:18:33.283] [info] [VISION_AI] GPU acceleration: offloading all layers to GPU
+[2026-03-08 11:18:33.283] [info] [VISION_AI] LLM loaded: [CLOUD] Groq Cloud (llama-3.3-70b-versatile) [READY] | endpoint: https://api.groq.com/openai/v1/chat/completions | timeout: 30s | conversation: 0 messages
+[2026-03-08 11:18:33.283] [info] [VISION_AI] AI ReAct agent initialized
+[2026-03-08 11:18:33.284] [warning] [VISION_AI] Screen Observer: OCR not compiled, running in hash-only mode
+[2026-03-08 11:18:33.304] [info] [VISION_AI] VectorMemory: Allocated 29MB aligned matrix (10000 x 768)
+[2026-03-08 11:18:33.324] [info] [VISION_AI] VectorMemory: Loaded 0 entries from P:\VISION AI C++\build\bin\Release\data\vector_memory.bin
+[2026-03-08 11:18:33.325] [info] [VISION_AI] Vector Memory loaded: 0 entries
+[2026-03-08 11:18:33.325] [info] [VISION_AI] Confidence Scorer initialized
+[2026-03-08 11:24:49.536] [info] [VISION_AI] ScreenObserver: Background thread stopped
+[2026-03-08 11:24:49.536] [info] [VISION_AI] LocalBackend: VRAM/RAM released — model + backend freed
+[2026-03-08 11:24:49.539] [info] [VISION_AI] CloudBackend shutdown complete
+[2026-03-08 11:24:49.539] [info] [VISION_AI] LLMController: Both backends shut down — all resources freed
+[2026-03-08 11:24:49.539] [info] [VISION_AI] CloudBackend shutdown complete
+[2026-03-08 11:24:49.539] [info] [VISION_AI] LocalBackend: VRAM/RAM released — model + backend freed
+[2026-03-08 11:24:49.579] [info] [VISION_AI] ScreenObserver: Background thread stopped
+[2026-03-08 11:24:49.580] [info] [VISION_AI] VectorMemory: Saved 0 entries to P:\VISION AI C++\build\bin\Release\data\vector_memory.bin

@@ -265,7 +265,7 @@ std::vector<MemorySearchResult> VectorMemory::searchByEmbedding(
     std::vector<MemorySearchResult> results;
     results.reserve(scores.size());
     for (const auto& s : scores) {
-        results.push_back({s.idx, s.score, &entries_[s.idx]});
+        results.push_back({s.idx, s.score, entries_[s.idx]});
     }
 
     // aligned_query auto-freed by AlignedPtr destructor here!
@@ -278,14 +278,14 @@ std::string VectorMemory::getRelevantContext(const std::string& query, int max_r
 
     std::string context = "[Relevant memories]:\n";
     for (const auto& r : results) {
-        auto age = std::chrono::steady_clock::now() - r.entry->created;
+        auto age = std::chrono::steady_clock::now() - r.entry.created;
         auto mins = std::chrono::duration_cast<std::chrono::minutes>(age).count();
 
         context += "- (" + std::to_string((int)(r.similarity * 100)) + "% match, "
                  + std::to_string(mins) + "m ago) "
-                 + r.entry->text;
-        if (!r.entry->context.empty()) {
-            context += " [ctx: " + r.entry->context + "]";
+                 + r.entry.text;
+        if (!r.entry.context.empty()) {
+            context += " [ctx: " + r.entry.context + "]";
         }
         context += "\n";
     }
@@ -335,6 +335,10 @@ int VectorMemory::purgeOlderThan(int seconds) {
             }
             count_--;
             purged++;
+            
+            // BUG 13 FIX: After swapping, the new item at index `i` might also be old.
+            // Since we're iterating backwards, we must check this index again next loop.
+            if (i != last) i++; 
         }
     }
     return purged;

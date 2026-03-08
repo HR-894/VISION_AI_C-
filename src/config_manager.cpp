@@ -104,9 +104,7 @@ bool ConfigManager::load() {
         file >> loaded;
         
         // Merge loaded values over defaults (preserving any new default keys)
-        for (auto& [key, val] : loaded.items()) {
-            config_[key] = val;
-        }
+        config_.merge_patch(loaded);
         
         LOG_INFO("Config loaded from {}", file_path_);
         return true;

@@ -124,6 +124,7 @@ private:
     std::pair<bool, std::string> actionDeleteFile(const nlohmann::json& params);
     std::pair<bool, std::string> actionClipboardGet(const nlohmann::json& params);
     std::pair<bool, std::string> actionClipboardSet(const nlohmann::json& params);
+    std::pair<bool, std::string> actionRunPowerShell(const nlohmann::json& params);
     std::pair<bool, std::string> actionTaskComplete(const nlohmann::json& params);
     std::pair<bool, std::string> actionGetUITree(const nlohmann::json& params);
 };

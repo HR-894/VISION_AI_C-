@@ -21,6 +21,7 @@ models/
 *.pdb
 *.ilk
 *.exp
+*.zip
 
 # OS files
 Thumbs.db

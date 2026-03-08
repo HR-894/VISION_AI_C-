@@ -111,7 +111,7 @@ std::string WhisperEngine::transcribe(const std::vector<float>& audio) {
     if (!loaded_ && !loadModel()) return "";
     
     whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    wparams.n_threads = (int)std::thread::hardware_concurrency();  // Use all cores for speed
+    wparams.n_threads = std::max(1, (int)std::thread::hardware_concurrency() / 2);  // Use half cores to leave room for LLM
     wparams.print_progress = false;
     wparams.print_special = false;
     wparams.print_realtime = false;

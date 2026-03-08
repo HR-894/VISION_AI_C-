@@ -144,7 +144,17 @@ std::string LocalBackend::generate(const std::string& prompt,
                                    const std::vector<Message>& history) {
 #ifdef VISION_HAS_LLM
     std::lock_guard<std::recursive_mutex> lock(llm_mutex_);
-    if (!loaded_ && !initialize()) return "";
+    if (!loaded_ && !initialize()) {
+        LOG_ERROR("LocalBackend::generate() — model not loaded, cannot generate");
+        return "Error: Local model is not loaded correctly. Please check your model path in Settings.";
+    }
+    
+    // CRASH GUARD: Double-check pointers are valid after initialize()
+    if (!ctx_ || !model_) {
+        LOG_ERROR("LocalBackend::generate() — context or model is null after initialization");
+        loaded_ = false;  // Reset so next call re-initializes
+        return "Error: Model context became invalid. Please restart the app or reload the model.";
+    }
 
     touchActivity();
     cancel_generation_ = false;
@@ -154,7 +164,9 @@ std::string LocalBackend::generate(const std::string& prompt,
 
     // Tokenize
     const llama_vocab* vocab = llama_model_get_vocab(model_);
-    std::vector<llama_token> tokens(context_size_);
+    // FIX 2: Buffer Underrun logic. Allocate dynamically instead of context_size_
+    // so massive prompts don't get silently dropped by llama_tokenize.
+    std::vector<llama_token> tokens(full_prompt.size() + 128);
     int n_tokens = llama_tokenize(vocab, full_prompt.c_str(), (int)full_prompt.size(),
                                    tokens.data(), (int)tokens.size(), true, true);
     if (n_tokens < 0) {
@@ -187,19 +199,28 @@ std::string LocalBackend::generate(const std::string& prompt,
     ScopedBatch sb(context_size_, 0, 1);
     auto& batch = sb.batch;
 
+    // ── Evaluate Initial Prompt in Chunks (Prevent Batch Overflow Crash) ──
+    uint32_t n_batch = llama_n_batch(ctx_);
     llama_seq_id seq_ids[] = {0};
-    for (int i = 0; i < n_tokens; i++) {
-        batch.token   [batch.n_tokens] = tokens[i];
-        batch.pos     [batch.n_tokens] = i;
-        batch.n_seq_id[batch.n_tokens] = 1;
-        batch.seq_id  [batch.n_tokens] = seq_ids;
-        batch.logits  [batch.n_tokens] = (i == n_tokens - 1);
-        batch.n_tokens++;
-    }
-
-    if (llama_decode(ctx_, batch) != 0) {
-        LOG_ERROR("LocalBackend: Decode failed (initial prompt)");
-        return "";  // ScopedBatch destructor frees batch automatically
+    
+    for (int i = 0; i < n_tokens; i += n_batch) {
+        int n_eval = std::min(n_tokens - i, (int)n_batch);
+        batch.n_tokens = 0;
+        
+        for (int j = 0; j < n_eval; j++) {
+            batch.token   [batch.n_tokens] = tokens[i + j];
+            batch.pos     [batch.n_tokens] = i + j;
+            batch.n_seq_id[batch.n_tokens] = 1;
+            batch.seq_id  [batch.n_tokens] = seq_ids;
+            // Only the final token in the final chunk needs logits
+            batch.logits  [batch.n_tokens] = ((i + j) == n_tokens - 1);
+            batch.n_tokens++;
+        }
+        
+        if (llama_decode(ctx_, batch) != 0) {
+            LOG_ERROR("LocalBackend: Decode failed at token chunk {}/{}", i, n_tokens);
+            return "";  // ScopedBatch destructor frees batch automatically
+        }
     }
 
     // Generate tokens
@@ -214,6 +235,10 @@ std::string LocalBackend::generate(const std::string& prompt,
         }
 
         auto* logits = llama_get_logits_ith(ctx_, -1);
+        if (!logits) {
+            LOG_ERROR("LocalBackend: llama_get_logits_ith returned null — context invalid");
+            break;
+        }
         int n_vocab_size = llama_vocab_n_tokens(vocab);
 
         // Temperature sampling
@@ -315,7 +340,8 @@ std::vector<float> LocalBackend::getEmbeddings(const std::string& text) {
     const llama_vocab* vocab = llama_model_get_vocab(model_);
 
     // Tokenize
-    std::vector<llama_token> tokens(context_size_);
+    // FIX 3: Dynamic tokenize allocation for embeddings too.
+    std::vector<llama_token> tokens(text.size() + 128);
     int n_tokens = llama_tokenize(vocab, text.c_str(), (int)text.size(),
                                    tokens.data(), (int)tokens.size(), true, true);
     if (n_tokens <= 0) return embedding;
@@ -331,34 +357,47 @@ std::vector<float> LocalBackend::getEmbeddings(const std::string& text) {
     ScopedBatch sb(context_size_, 0, 1);
     auto& batch = sb.batch;
 
+    // ── Evaluate Embeddings Prompt in Chunks (Prevent Batch Overflow Crash) ──
+    uint32_t n_batch = llama_n_batch(ctx_);
     llama_seq_id seq_ids[] = {1};  // seq_id=1 to avoid corrupting main chat KV cache
-    for (int i = 0; i < n_tokens; i++) {
-        batch.token   [batch.n_tokens] = tokens[i];
-        batch.pos     [batch.n_tokens] = i;
-        batch.n_seq_id[batch.n_tokens] = 1;
-        batch.seq_id  [batch.n_tokens] = seq_ids;
-        batch.logits  [batch.n_tokens] = (i == n_tokens - 1);
-        batch.n_tokens++;
+    
+    for (int i = 0; i < n_tokens; i += n_batch) {
+        int n_eval = std::min(n_tokens - i, (int)n_batch);
+        batch.n_tokens = 0;
+        
+        for (int j = 0; j < n_eval; j++) {
+            batch.token   [batch.n_tokens] = tokens[i + j];
+            batch.pos     [batch.n_tokens] = i + j;
+            batch.n_seq_id[batch.n_tokens] = 1;
+            batch.seq_id  [batch.n_tokens] = seq_ids;
+            // Only the final token gets logits (we need logits to extract embeddings)
+            batch.logits  [batch.n_tokens] = ((i + j) == n_tokens - 1);
+            batch.n_tokens++;
+        }
+        
+        if (llama_decode(ctx_, batch) != 0) {
+            LOG_ERROR("LocalBackend: Embedding decode failed at chunk {}/{}", i, n_tokens);
+            return embedding;
+        }
     }
 
-    if (llama_decode(ctx_, batch) == 0) {
-        int n_vocab = llama_vocab_n_tokens(vocab);
-        auto* logits = llama_get_logits_ith(ctx_, -1);
+    // Now extract the compacted vector
+    int n_vocab = llama_vocab_n_tokens(vocab);
+    auto* logits = llama_get_logits_ith(ctx_, -1);
 
-        // Compact vector from logit signature
-        int embed_dim = 128;
-        embedding.resize(embed_dim, 0.0f);
-        for (int i = 0; i < n_vocab; i++) {
-            embedding[i % embed_dim] += logits[i];
-        }
+    // Compact vector from logit signature
+    int embed_dim = 128;
+    embedding.resize(embed_dim, 0.0f);
+    for (int i = 0; i < n_vocab; i++) {
+        embedding[i % embed_dim] += logits[i];
+    }
 
-        // L2 normalize
-        float norm = 0.0f;
-        for (float v : embedding) norm += v * v;
-        norm = std::sqrt(norm);
-        if (norm > 0.0f) {
-            for (float& v : embedding) v /= norm;
-        }
+    // L2 normalize
+    float norm = 0.0f;
+    for (float v : embedding) norm += v * v;
+    norm = std::sqrt(norm);
+    if (norm > 0.0f) {
+        for (float& v : embedding) v /= norm;
     }
 
     // ScopedBatch destructor frees batch automatically

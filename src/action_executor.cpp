@@ -86,6 +86,7 @@ void ActionExecutor::initActionMap() {
     registerAction("delete_file", [this](const json& p) { return actionDeleteFile(p); });
     registerAction("clipboard_get", [this](const json& p) { return actionClipboardGet(p); });
     registerAction("clipboard_set", [this](const json& p) { return actionClipboardSet(p); });
+    registerAction("run_powershell", [this](const json& p) { return actionRunPowerShell(p); });
     registerAction("task_complete", [this](const json& p) { return actionTaskComplete(p); });
     registerAction("get_ui_tree", [this](const json& p) { return actionGetUITree(p); });
 }
@@ -565,6 +566,41 @@ std::pair<bool, std::string> ActionExecutor::actionGetUITree(const json& params)
     }
     auto tree = uia.getAccessibilityTree(depth);
     return {true, tree.dump(2)};
+}
+
+std::pair<bool, std::string> ActionExecutor::actionRunPowerShell(const json& params) {
+    std::string script = params.value("script", "");
+    if (script.empty()) return {false, "No script provided"};
+
+    // Save script to a temp file
+    std::string tmp = std::filesystem::temp_directory_path().string() + "\\vision_ai_script.ps1";
+    std::ofstream out(tmp);
+    if (!out) return {false, "Failed to create temp script file"};
+    out << script;
+    out.close();
+
+    // Run it and capture output
+    std::string cmd = "powershell -ExecutionPolicy Bypass -NoProfile -File \"" + tmp + "\" 2>&1";
+    std::string output;
+    FILE* pipe = _popen(cmd.c_str(), "r");
+    if (!pipe) return {false, "Failed to start PowerShell"};
+    
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        output += buffer;
+    }
+    _pclose(pipe);
+
+    // Limit output length so it doesn't overflow context
+    if (output.size() > 2000) {
+        output = output.substr(0, 1000) + "\n...[output truncated]...\n" + output.substr(output.size() - 1000);
+    }
+    
+    // Cleanup 
+    std::error_code ec;
+    std::filesystem::remove(tmp, ec);
+    
+    return {true, output.empty() ? "Script executed successfully (no output)" : output};
 }
 
 } // namespace vision

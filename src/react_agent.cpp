@@ -98,6 +98,11 @@ std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command)
         };
         action_history_.push_back(history_entry);
         
+        // BUG 10 FIX: Cap history to prevent context overflow on long tasks
+        if (action_history_.size() > 5) {
+            action_history_.erase(action_history_.begin());
+        }
+        
         last_result = act_result;
         
         if (!act_success) {
@@ -165,7 +170,13 @@ std::optional<json> ReActAgent::think(const std::string& cmd, const json& ctx) {
         "Available OS actions: open_app, open_url, search_web, type_text, press_key, "
         "click_element, scroll, set_volume, set_brightness, minimize, maximize, "
         "close_window, focus_window, screenshot, list_files, move_file, copy_file, "
-        "delete_file, clipboard_get, clipboard_set, task_complete.\n\n"
+        "delete_file, clipboard_get, clipboard_set, get_ui_tree, task_complete, "
+        "run_powershell.\n\n"
+        "CRITICAL FOR COMPLEX WORKFLOWS:\n"
+        "- If asked to do complex data processing (like 'search top 20 billionaires and write to excel' or 'organize downloads'), "
+        "DO NOT use simple macros. Instead, use 'run_powershell' to write a script that does the entire job seamlessly.\n"
+        "  Example: {\"action\": \"run_powershell\", \"params\": {\"script\": \"$data = Invoke-RestMethod ...; $data | Export-Csv output.csv\"}}\n"
+        "  PowerShell has full access to the web (Invoke-RestMethod) and files.\n\n"
         "RULES:\n"
         "1. ALWAYS output ONLY valid JSON — no extra text before or after.\n"
         "2. If the user is chatting (hi, hello, how are you, what is X, etc.) use MODE 2.\n"

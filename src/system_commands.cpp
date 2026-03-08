@@ -742,7 +742,19 @@ void SystemCommands::openUrlInBrowser(const std::string& url, const std::string&
     std::string full_url = url;
     if (full_url.find("://") == std::string::npos) full_url = "https://" + full_url;
     
-    ShellExecuteA(nullptr, "open", exe.c_str(), full_url.c_str(), nullptr, SW_SHOW);
+    // FIX B5: Command Injection Vulnerability
+    // Bypassing ShellExecute and cmd.exe interpreter to prevent arbitrary code execution
+    // from malicious LLM inputs (e.g., URL containing `& calc.exe`).
+    std::string cmdline = "\"" + exe + "\" \"" + full_url + "\"";
+    STARTUPINFOA si{}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, FALSE,
+                       0, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    } else {
+        ShellExecuteA(nullptr, "open", exe.c_str(), full_url.c_str(), nullptr, SW_SHOW);
+    }
 }
 
 bool SystemCommands::isBrowser(const std::string& app_name) const {

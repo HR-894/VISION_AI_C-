@@ -1,0 +1,7 @@
+{
+    "backend": "vulkan",
+    "gpu_memory_mb": 1024,
+    "gpu_name": "AMD Radeon(TM) Vega 3 Graphics",
+    "recommended_layers": 10,
+    "vendor": "amd"
+}
