@@ -77,6 +77,7 @@ private:
     float temperature_ = 0.1f;
     float top_p_ = 0.9f;
     int max_tokens_ = 512;
+    int n_past_ = 0;  // PRD Fix 4: KV cache cursor for rolling window
 
     std::atomic<bool> cancel_generation_{false};
     mutable std::recursive_mutex llm_mutex_;

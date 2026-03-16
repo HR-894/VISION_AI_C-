@@ -21,6 +21,8 @@
 #include <QTimer>
 #include <QSystemTrayIcon>
 #include <QCloseEvent>
+#include <QFutureWatcher>
+#include <QFuture>
 #include <QStyle>
 
 #include "config_manager.h"
@@ -184,7 +186,8 @@ private:
     bool kill_switch_registered_ = false;
     QTimer* idle_timer_ = nullptr;  // LLM idle auto-unload timer
     std::thread model_load_thread_;  // Joined in destructor (C3 fix)
-    std::thread cmd_thread_;          // Command processing thread (no longer detached)
+    QFutureWatcher<void>* cmd_watcher_ = nullptr;  // Async command watcher (PRD Fix 1)
+    QFuture<void> cmd_future_;                      // Async command future
 
     // FIX B6: Graceful shutdown flag — ALL background threads must check
     // this before accessing `this` or any member pointers.

@@ -484,8 +484,11 @@ std::vector<AppInfo> SystemCommands::listRunningApps() {
         
         AppInfo info;
         int sz = WideCharToMultiByte(CP_UTF8, 0, title, -1, nullptr, 0, nullptr, nullptr);
-        info.window_title.resize(sz - 1);
+        // PRD Fix 3: Allocate full sz, let OS write null, then resize down
+        info.window_title.resize(sz, '\0');
         WideCharToMultiByte(CP_UTF8, 0, title, -1, info.window_title.data(), sz, nullptr, nullptr);
+        if (!info.window_title.empty() && info.window_title.back() == '\0')
+            info.window_title.pop_back();
         
         GetWindowThreadProcessId(hwnd, &info.pid);
         HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, info.pid);
@@ -557,8 +560,10 @@ bool SystemCommands::isAppRunning(const std::string& name) {
             // FIX B4: Use WideCharToMultiByte instead of lossy wstring→string cast
             std::wstring wname(pe.szExeFile);
             int needed = WideCharToMultiByte(CP_UTF8, 0, wname.c_str(), -1, nullptr, 0, nullptr, nullptr);
-            std::string pname(needed > 0 ? needed - 1 : 0, '\0');
+            // PRD Fix 3: Allocate full buffer, let OS write null, then resize
+            std::string pname(needed > 0 ? needed : 0, '\0');
             WideCharToMultiByte(CP_UTF8, 0, wname.c_str(), -1, pname.data(), needed, nullptr, nullptr);
+            if (!pname.empty() && pname.back() == '\0') pname.pop_back();
             std::transform(pname.begin(), pname.end(), pname.begin(), ::tolower);
             if (pname == lower) { found = true; break; }
         } while (Process32NextW(snap, &pe));

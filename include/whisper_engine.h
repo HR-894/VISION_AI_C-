@@ -30,6 +30,9 @@ public:
     /// Load the whisper model (lazy load on first use)
     bool loadModel();
 
+    /// Set explicit model path (PRD Fix 2: from Settings UI)
+    void setModelPath(const std::string& path);
+
     /// Unload model to free memory
     void unloadModel();
 

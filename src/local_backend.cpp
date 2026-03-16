@@ -189,13 +189,34 @@ std::string LocalBackend::generate(const std::string& prompt,
                  original_count, n_tokens);
     }
 
-    // Clear stale KV cache
-    llama_memory_clear(llama_get_memory(ctx_), true);
+    // ── PRD Fix 4: Rolling KV Cache — preserve system prompt + recent context ──
+    // Instead of llama_memory_clear (which causes total amnesia), we use a
+    // rolling window: keep the first 128 tokens (system prompt) and trim the
+    // middle when approaching the context limit.
+    if (n_past_ + n_tokens > context_size_ - max_tokens_) {
+        int keep_prefix = std::min(128, n_past_ / 4);  // System prompt tokens
+        int keep_suffix = context_size_ / 4;             // Recent context
+        int discard_from = keep_prefix;
+        int discard_to = std::max(discard_from + 1, n_past_ - keep_suffix);
+        
+        if (discard_to > discard_from) {
+            // Remove tokens [discard_from, discard_to) from the KV cache
+            auto mem = llama_get_memory(ctx_);
+            llama_memory_seq_rm(mem, 0, discard_from, discard_to);
+            // Shift remaining tokens down to fill the gap
+            llama_memory_seq_add(mem, 0, discard_to, n_past_, -(discard_to - discard_from));
+            n_past_ -= (discard_to - discard_from);
+            LOG_WARN("KV cache rolling trim: freed {} token slots (kept prefix={}, suffix={})",
+                     discard_to - discard_from, keep_prefix, keep_suffix);
+        } else {
+            // Cache too small to roll — full clear as fallback
+            llama_memory_clear(llama_get_memory(ctx_), true);
+            n_past_ = 0;
+            LOG_WARN("KV cache full — fallback to clear");
+        }
+    }
 
     // ── RAII Batch: guaranteed cleanup on ALL exit paths ──
-    // BUG FIX: Previously, if llama_decode() failed mid-loop (line 255),
-    // the break statement would skip llama_batch_free() → heap leak.
-    // ScopedBatch destructor ALWAYS calls llama_batch_free().
     ScopedBatch sb(context_size_, 0, 1);
     auto& batch = sb.batch;
 
@@ -209,7 +230,7 @@ std::string LocalBackend::generate(const std::string& prompt,
         
         for (int j = 0; j < n_eval; j++) {
             batch.token   [batch.n_tokens] = tokens[i + j];
-            batch.pos     [batch.n_tokens] = i + j;
+            batch.pos     [batch.n_tokens] = n_past_ + i + j;  // Fix 4: offset by n_past_
             batch.n_seq_id[batch.n_tokens] = 1;
             batch.seq_id  [batch.n_tokens] = seq_ids;
             // Only the final token in the final chunk needs logits
@@ -222,10 +243,11 @@ std::string LocalBackend::generate(const std::string& prompt,
             return "";  // ScopedBatch destructor frees batch automatically
         }
     }
+    n_past_ += n_tokens;  // Fix 4: advance the KV cursor
 
     // Generate tokens
     std::string result;
-    int n_cur = n_tokens;
+    int n_cur = n_past_;  // Fix 4: start from KV cursor position
 
     for (int i = 0; i < max_tokens_; i++) {
         // ── Emergency Stop check ──
@@ -316,6 +338,9 @@ std::string LocalBackend::generate(const std::string& prompt,
 
         if (llama_decode(ctx_, batch) != 0) break;  // ScopedBatch handles cleanup
     }
+
+    // PRD Fix 4: Update KV cursor to include generated tokens
+    n_past_ = n_cur;
 
     // ScopedBatch destructor frees batch here — guaranteed on all paths
     cancel_generation_ = false;

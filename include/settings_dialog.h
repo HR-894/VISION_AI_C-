@@ -55,6 +55,7 @@ private slots:
     void onCancel();
     void onEngineChanged(int index);
     void onBrowseModel();
+    void onBrowseWhisperModel();  // PRD Fix 2
     void onTestApiKey();
 
 private:
@@ -81,6 +82,11 @@ private:
     // General
     QCheckBox*  startup_check_ = nullptr;
     QComboBox*  hotkey_combo_ = nullptr;
+
+    // Voice / Whisper (PRD Fix 2)
+    QLineEdit*  whisper_path_edit_ = nullptr;
+    QPushButton* whisper_browse_btn_ = nullptr;
+    QComboBox*  whisper_size_combo_ = nullptr;
 
     // Buttons
     QPushButton* save_btn_ = nullptr;

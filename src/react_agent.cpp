@@ -37,6 +37,7 @@ std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command)
     running_ = true;
     action_history_.clear();
     action_counts_.clear();
+    condensed_memory_.clear();  // PRD Fix 5: reset memory
     
     std::string last_result;
     bool success = false;
@@ -98,9 +99,9 @@ std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command)
         };
         action_history_.push_back(history_entry);
         
-        // BUG 10 FIX: Cap history to prevent context overflow on long tasks
+        // PRD Fix 5: Summarize old steps instead of hard-deleting
         if (action_history_.size() > 5) {
-            action_history_.erase(action_history_.begin());
+            summarizeHistory();
         }
         
         last_result = act_result;
@@ -181,8 +182,15 @@ std::optional<json> ReActAgent::think(const std::string& cmd, const json& ctx) {
         "1. ALWAYS output ONLY valid JSON — no extra text before or after.\n"
         "2. If the user is chatting (hi, hello, how are you, what is X, etc.) use MODE 2.\n"
         "3. If the user wants an OS action, use MODE 1.\n"
-        "4. Be smart, helpful, and conversational like a real assistant.\n\n"
-        "[USER] " + cmd;
+        "4. Be smart, helpful, and conversational like a real assistant.\n\n";
+
+    // PRD Fix 5: Inject condensed memory from earlier steps
+    if (!condensed_memory_.empty()) {
+        smart_prompt += "[MEMORY STATE — summary of earlier steps]\n" +
+                        condensed_memory_ + "\n\n";
+    }
+
+    smart_prompt += "[USER] " + cmd;
 
     return llm_.reactStep(smart_prompt, ctx, action_history_);
 }
@@ -240,6 +248,37 @@ json ReActAgent::fallbackThink(const std::string& cmd) {
 bool ReActAgent::isActionRepeated(const std::string& key) {
     action_counts_[key]++;
     return action_counts_[key] > 3;
+}
+
+void ReActAgent::summarizeHistory() {
+    // PRD Fix 5: Compress oldest 3 entries into a condensed paragraph
+    std::string summary_prompt =
+        "Summarize these agent actions into ONE short paragraph (max 100 words).\n"
+        "Focus on: what was the goal, what actions were taken, what results occurred.\n\n";
+    
+    int to_summarize = std::min(3, (int)action_history_.size());
+    for (int i = 0; i < to_summarize; i++) {
+        summary_prompt += "Step " + std::to_string(i + 1) + ": ";
+        summary_prompt += "Action=" + action_history_[0].value("action", "?");
+        summary_prompt += ", Result=" + action_history_[0].value("result", "?");
+        summary_prompt += "\n";
+        action_history_.erase(action_history_.begin());
+    }
+    
+    // Use LLM to generate summary (lightweight single-shot call)
+    auto result = llm_.generate(summary_prompt, {});
+    if (!result.empty()) {
+        if (!condensed_memory_.empty()) {
+            condensed_memory_ += " | " + result;
+        } else {
+            condensed_memory_ = result;
+        }
+        // Keep condensed memory from growing unbounded
+        if (condensed_memory_.size() > 500) {
+            condensed_memory_ = condensed_memory_.substr(condensed_memory_.size() - 500);
+        }
+    }
+    LOG_INFO("ReAct history summarized: {} steps compressed", to_summarize);
 }
 
 } // namespace vision

@@ -299,6 +299,30 @@ void SettingsDialog::setupUI() {
     local_layout->addRow("Context Size:", context_spin_);
     main_layout->addWidget(local_group);
 
+    // ── Voice / Whisper Settings (PRD Fix 2) ─────────────────
+    auto* whisper_group = new QGroupBox("Voice / Whisper Model");
+    whisper_group->setObjectName("whisperGroup");
+    auto* whisper_layout = new QFormLayout(whisper_group);
+    whisper_layout->setSpacing(8);
+
+    whisper_path_edit_ = new QLineEdit();
+    whisper_path_edit_->setPlaceholderText("Path to whisper .bin model file...");
+    whisper_path_edit_->setReadOnly(true);
+
+    auto* whisper_path_row = new QHBoxLayout();
+    whisper_path_row->addWidget(whisper_path_edit_);
+    whisper_browse_btn_ = new QPushButton("Browse");
+    whisper_browse_btn_->setFixedWidth(70);
+    connect(whisper_browse_btn_, &QPushButton::clicked, this, &SettingsDialog::onBrowseWhisperModel);
+    whisper_path_row->addWidget(whisper_browse_btn_);
+
+    whisper_size_combo_ = new QComboBox();
+    whisper_size_combo_->addItems({"tiny", "base", "base.en", "small", "medium", "large-v3"});
+
+    whisper_layout->addRow("Model File:", whisper_path_row);
+    whisper_layout->addRow("Model Size:", whisper_size_combo_);
+    main_layout->addWidget(whisper_group);
+
     // ── General ─────────────────────────────────────────
     auto* general_group = new QGroupBox("General");
     auto* general_layout = new QFormLayout(general_group);
@@ -366,6 +390,13 @@ void SettingsDialog::loadFromConfig() {
     std::string hotkey = config_.get<std::string>("hotkey", "ctrl+win");
     int hk_idx = hotkey_combo_->findText(QString::fromStdString(hotkey), Qt::MatchFixedString);
     if (hk_idx >= 0) hotkey_combo_->setCurrentIndex(hk_idx);
+
+    // Whisper (PRD Fix 2)
+    std::string whisper_path = config_.getNested<std::string>("whisper.model_path", "");
+    whisper_path_edit_->setText(QString::fromStdString(whisper_path));
+    std::string whisper_size = config_.getNested<std::string>("whisper.model_size", "base");
+    int ws_idx = whisper_size_combo_->findText(QString::fromStdString(whisper_size));
+    if (ws_idx >= 0) whisper_size_combo_->setCurrentIndex(ws_idx);
 }
 
 void SettingsDialog::onSave() {
@@ -407,6 +438,15 @@ void SettingsDialog::onSave() {
     // General
     config_.set("run_on_startup", startup_check_->isChecked());
     config_.set("hotkey", hotkey_combo_->currentText().toLower().toStdString());
+
+    // Whisper (PRD Fix 2)
+    {
+        nlohmann::json whisper_cfg;
+        try { whisper_cfg = config_.raw()["whisper"]; } catch (...) {}
+        whisper_cfg["model_path"] = whisper_path_edit_->text().toStdString();
+        whisper_cfg["model_size"] = whisper_size_combo_->currentText().toStdString();
+        config_.set("whisper", whisper_cfg);
+    }
 
     // Persist
     config_.save();
@@ -481,6 +521,17 @@ void SettingsDialog::onTestApiKey() {
     QTimer::singleShot(1500, this, [this]() {
         test_key_btn_->setStyleSheet("");  // Reset
     });
+}
+
+void SettingsDialog::onBrowseWhisperModel() {
+    QString path = QFileDialog::getOpenFileName(
+        this, "Select Whisper Model File",
+        QDir::homePath(),
+        "Whisper Models (*.bin);;All Files (*)"
+    );
+    if (!path.isEmpty()) {
+        whisper_path_edit_->setText(path);
+    }
 }
 
 } // namespace vision

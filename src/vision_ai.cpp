@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <eh.h>       // _set_se_translator: converts SEH → C++ exceptions
+#include <QtConcurrent>  // PRD Fix 1: async command execution
 
 #ifdef VISION_HAS_SPDLOG
 #include <spdlog/spdlog.h>
@@ -150,7 +151,10 @@ VisionAI::VisionAI(QWidget* parent)
     // Thread-safe message passing
     connect(this, &VisionAI::messageReady, this, &VisionAI::appendMessage);
     connect(this, &VisionAI::statusReady, this, &VisionAI::setStatusText);
-    
+
+    // PRD Fix 1: Create async command watcher (signals/slots, no blocking)
+    cmd_watcher_ = new QFutureWatcher<void>(this);
+
     updateStatus("Ready | " + profiler_.getStatusString());
     addMessage("VISION", "Hello! I'm VISION AI (C++). Type a command or press Ctrl+Alt+Space to use voice.");
 }
@@ -173,13 +177,13 @@ VisionAI::~VisionAI() {
 #endif
 
     // STEP 3: Join all background threads safely.
-    // Because we just called cancelGeneration() and is_shutting_down_=true,
-    // all background threads will abort and exit their loops almost instantly.
-    // We can do a normal, blocking join() here. Do NOT detach the threads, 
-    // as detaching a class member thread immediately before the class is 
-    // destroyed causes fatal Use-After-Free crashes and std::terminate().
     if (model_load_thread_.joinable()) model_load_thread_.join();
-    if (cmd_thread_.joinable())        cmd_thread_.join();
+
+    // PRD Fix 1: Wait for async command future (non-blocking during normal
+    // operation, only blocks here during shutdown after cancelGeneration)
+    if (cmd_future_.isRunning()) {
+        cmd_future_.waitForFinished();
+    }
 
 #ifdef VISION_HAS_WHISPER
     if (audio_capture_) audio_capture_->stopRecording();  // Stop mic stream
@@ -398,7 +402,16 @@ void VisionAI::loadModels() {
 #ifdef VISION_HAS_WHISPER
     auto rec = profiler_.getRecommendedConfig();
     std::string whisper_model = rec.value("whisper_model", "base");
-    whisper_engine_ = std::make_unique<WhisperEngine>(whisper_model);
+
+    // PRD Fix 2: Read user-configured whisper settings from config
+    std::string whisper_size = config_.getNested<std::string>("whisper.model_size", whisper_model);
+    whisper_engine_ = std::make_unique<WhisperEngine>(whisper_size);
+
+    std::string saved_whisper_path = config_.getNested<std::string>("whisper.model_path", "");
+    if (!saved_whisper_path.empty()) {
+        whisper_engine_->setModelPath(saved_whisper_path);
+    }
+
     audio_capture_ = std::make_unique<AudioCapture>();
     
     if (whisper_engine_->loadModel()) {
@@ -511,22 +524,39 @@ void VisionAI::loadModels() {
 
     // ── Vector Memory: Init + Load persisted data ───────────────
     vector_memory_ = std::make_unique<VectorMemory>();
-#ifdef VISION_HAS_LLM
-    if (llm_controller_) {
-        // [OOM FIX] Disabled auto-embeddings for VectorMemory
-        // Generating embeddings forces the local GGUF model to load into memory.
-        // On 8GB RAM machines, this instantly causes an Out-Of-Memory (OOM) silent
-        // crash right after a command executes or right before a chat reply.
-        /*
-        vector_memory_->setEmbeddingFn(
-            [this](const std::string& text) -> std::vector<float> {
-                if (is_shutting_down_.load()) return {};
-                return llm_controller_->getEmbeddings(text);
+
+    // PRD Fix 6: Lightweight hash-based embeddings — zero model load, zero OOM risk.
+    // Uses character trigram hashing to produce a 128-dim vector.
+    // This revives the AVX2 SIMD search without loading the heavy LLM.
+    vector_memory_->setEmbeddingFn(
+        [](const std::string& text) -> std::vector<float> {
+            const int DIM = 128;
+            std::vector<float> vec(DIM, 0.0f);
+            // Character trigram hashing
+            std::string lower = text;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            for (size_t i = 0; i + 2 < lower.size(); i++) {
+                uint32_t hash = ((uint32_t)(unsigned char)lower[i] * 31u +
+                                 (uint32_t)(unsigned char)lower[i+1]) * 31u +
+                                 (uint32_t)(unsigned char)lower[i+2];
+                vec[hash % DIM] += 1.0f;
             }
-        );
-        */
-    }
-#endif
+            // Also hash word-level features
+            std::istringstream iss(lower);
+            std::string word;
+            while (iss >> word) {
+                uint32_t wh = 0;
+                for (char c : word) wh = wh * 37u + (uint32_t)(unsigned char)c;
+                vec[wh % DIM] += 2.0f;  // Words get higher weight
+            }
+            // L2 normalize
+            float norm = 0.0f;
+            for (float v : vec) norm += v * v;
+            norm = std::sqrt(norm);
+            if (norm > 0.0f) for (float& v : vec) v /= norm;
+            return vec;
+        }
+    );
     // Load persisted memories
     std::string mem_path = (fs::path(config_.getDataDir()) / "vector_memory.bin").string();
     if (fs::exists(mem_path)) {
@@ -674,20 +704,17 @@ void VisionAI::onSendCommand() {
         }
     }
     
-    // FIX C6: To prevent UI freezing while preventing fatal Use-After-Free
-    // crashes, DO NOT detach the thread! Detached threads access `this` after
-    // it's destroyed or run concurrently, corrupting sqlite3/memory.
-    // Instead, actively cancel the old LLM generation — it will exit within
-    // milliseconds, allowing a fast, safe join() before starting the new command.
-    if (cmd_thread_.joinable()) {
+    // ═══ PRD Fix 1: Event-Driven Async Command Execution ═══════════════
+    // Cancel any in-flight LLM generation — it will exit within milliseconds.
+    // Unlike the old pattern (cmd_thread_.join()), this does NOT block the UI.
 #ifdef VISION_HAS_LLM
-        if (llm_controller_) {
-            llm_controller_->cancelGeneration();
-        }
-#endif
-        cmd_thread_.join();
+    if (llm_controller_) {
+        llm_controller_->cancelGeneration();
     }
-    cmd_thread_ = std::thread([this, command]() {
+#endif
+    // If a previous future is still running, cancel will cause it to exit soon.
+    // QtConcurrent manages the thread pool — no manual join needed.
+    cmd_future_ = QtConcurrent::run([this, command]() {
       // Convert Windows SEH (access violations from llama.cpp) into C++ exceptions
       // so they're caught by catch(...) below instead of killing the process.
       // _set_se_translator is per-thread and MSVC-compatible with C++ destructors.

@@ -49,6 +49,7 @@ private:
 
     std::vector<nlohmann::json> action_history_;
     std::unordered_map<std::string, int> action_counts_;
+    std::string condensed_memory_;  // PRD Fix 5: summarized early steps
     int max_steps_ = 10;
     std::atomic<bool> running_{false};
 
@@ -63,6 +64,7 @@ private:
 
     // ── Helpers ──────────────────────────────────────────────────
     bool isActionRepeated(const std::string& key);
+    void summarizeHistory();  // PRD Fix 5: compress old steps
 };
 
 } // namespace vision

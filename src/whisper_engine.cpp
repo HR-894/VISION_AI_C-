@@ -51,9 +51,7 @@ std::string WhisperEngine::findModelPath() const {
         "models/ggml-small.bin",
         "models/ggml-" + model_size_ + ".bin",
         "models/ggml-large-v3.bin",
-        "M:/AI/MODELS/VOICE/ggml-base.bin",
-        "M:/AI/MODELS/VOICE/ggml-small.bin",
-        "M:/AI/MODELS/VOICE/ggml-large-v3.bin",
+        // PRD Fix 2: Removed hardcoded M:/AI/MODELS/VOICE/ developer paths
         "data/models/ggml-base.bin",
         "data/models/ggml-" + model_size_ + ".bin",
         "../models/ggml-base.bin",
@@ -92,6 +90,13 @@ bool WhisperEngine::loadModel() {
 #else
     return false;
 #endif
+}
+
+void WhisperEngine::setModelPath(const std::string& path) {
+    if (!path.empty()) {
+        model_path_ = path;
+        LOG_INFO("Whisper model path set to: {}", path);
+    }
 }
 
 void WhisperEngine::unloadModel() {
