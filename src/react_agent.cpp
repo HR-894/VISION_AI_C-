@@ -266,7 +266,7 @@ void ReActAgent::summarizeHistory() {
     }
     
     // Use LLM to generate summary (lightweight single-shot call)
-    auto result = llm_.generate(summary_prompt, {});
+    auto result = llm_.generateReactResponse(summary_prompt);
     if (!result.empty()) {
         if (!condensed_memory_.empty()) {
             condensed_memory_ += " | " + result;

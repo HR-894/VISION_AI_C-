@@ -31,7 +31,7 @@ option(VISION_BUILD_TESTS     "Build unit tests"                   OFF)
 # ============================================================
 # Dependencies — Qt6
 # ============================================================
-find_package(Qt6 REQUIRED COMPONENTS Widgets Core Network)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Core Network Concurrent)
 qt_standard_project_setup()
 
 # ============================================================
@@ -273,6 +273,7 @@ target_link_libraries(VISION_AI PRIVATE
     Qt6::Widgets
     Qt6::Core
     Qt6::Network
+    Qt6::Concurrent
     nlohmann_json
 )
 

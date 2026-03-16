@@ -9,6 +9,7 @@
 #include <thread>
 #include <chrono>
 #include <sstream>
+#include <fstream>
 #include <filesystem>
 
 #ifdef VISION_HAS_OCR
