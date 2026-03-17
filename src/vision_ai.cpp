@@ -289,8 +289,13 @@ void VisionAI::setupUI() {
         "QComboBox QAbstractItemView { background: #2b2d31; color: #dbdee1; "
         "  selection-background-color: #5865F2; outline: none; border: 1px solid #3f3f46; }"
     );
-    // Load presets from config
-    auto config_presets = config_.get<nlohmann::json>("presets", nlohmann::json::array());
+    // Load presets from external presets.json
+    nlohmann::json config_presets = nlohmann::json::array();
+    std::string presets_path = (std::filesystem::path(config_.getDataDir()) / "presets.json").string();
+    std::ifstream preset_file(presets_path);
+    if (preset_file.is_open()) {
+        try { config_presets = nlohmann::json::parse(preset_file); } catch (...) {}
+    }
     for (const auto& preset : config_presets) {
         if (preset.contains("name")) {
             preset_selector_->addItem(QString::fromStdString(preset["name"].get<std::string>()));
@@ -1477,8 +1482,13 @@ void VisionAI::onPresetChanged(int index) {
 #ifdef VISION_HAS_LLM
     if (!llm_controller_ || index < 0) return;
 
-    // Fetch the presets array from config
-    auto presets = config_.get<nlohmann::json>("presets", nlohmann::json::array());
+    // Fetch the presets array from presets.json
+    nlohmann::json presets = nlohmann::json::array();
+    std::string presets_path = (std::filesystem::path(config_.getDataDir()) / "presets.json").string();
+    std::ifstream preset_file(presets_path);
+    if (preset_file.is_open()) {
+        try { presets = nlohmann::json::parse(preset_file); } catch (...) {}
+    }
     if (index >= (int)presets.size()) return;
 
     const auto& preset = presets[index];
