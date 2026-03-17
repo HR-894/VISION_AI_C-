@@ -31,7 +31,7 @@ ReActAgent::ReActAgent(LLMController& llm, ActionExecutor& executor,
                        WindowManager& winmgr, VisionAI& app)
     : llm_(llm), executor_(executor), winmgr_(winmgr), app_(app) {}
 
-std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command) {
+std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command, StreamCallback stream_cb) {
     LOG_INFO("ReAct agent starting task: {}", command);
     
     running_ = true;
@@ -46,12 +46,14 @@ std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command)
         LOG_INFO("ReAct step {}/{}", step + 1, max_steps_);
         
         // 1. Observe
+        if (step_callback_) step_callback_(step + 1, "Observing", "Scanning active windows...");
         auto context = observe();
         context["step"] = step + 1;
         context["max_steps"] = max_steps_;
         
         // 2. Think
-        auto plan = think(command, context);
+        if (step_callback_) step_callback_(step + 1, "Thinking", "Analyzing command...");
+        auto plan = think(command, context, stream_cb);
         if (!plan) {
             // Try fallback
             plan = fallbackThink(command);
@@ -67,6 +69,7 @@ std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command)
         auto params = action_json.value("params", json::object());
         
         LOG_INFO("Thought: {} | Action: {}", thought, action);
+        if (step_callback_) step_callback_(step + 1, "Thinking", thought.empty() ? action : thought);
         
         // Check for task completion OR chat reply (1-step fast-exit)
         if (action == "task_complete" || action == "done" || action == "finish" ||
@@ -86,6 +89,7 @@ std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command)
         }
         
         // 3. Act
+        if (step_callback_) step_callback_(step + 1, "Acting", action);
         auto [act_success, act_result] = act(action_json);
         
         // Record in history
@@ -157,7 +161,7 @@ json ReActAgent::observe() {
     return ctx;
 }
 
-std::optional<json> ReActAgent::think(const std::string& cmd, const json& ctx) {
+std::optional<json> ReActAgent::think(const std::string& cmd, const json& ctx, StreamCallback stream_cb) {
     // Smart dual-mode prompt: AI Agent + Chat (inspired by HR-AI-MIND)
     // The AI decides whether to execute an OS action or reply naturally.
     std::string smart_prompt =
@@ -192,7 +196,7 @@ std::optional<json> ReActAgent::think(const std::string& cmd, const json& ctx) {
 
     smart_prompt += "[USER] " + cmd;
 
-    return llm_.reactStep(smart_prompt, ctx, action_history_);
+    return llm_.reactStep(smart_prompt, ctx, action_history_, stream_cb);
 }
 
 std::pair<bool, std::string> ReActAgent::act(const json& plan) {

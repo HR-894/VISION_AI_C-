@@ -100,7 +100,8 @@ bool CloudBackend::isReady() const {
 // ═══════════════════ Inference ═════════════════════════════════════
 
 std::string CloudBackend::generate(const std::string& prompt,
-                                   const std::vector<Message>& history) {
+                                   const std::vector<Message>& history,
+                                   StreamCallback stream_cb) {
 #ifdef VISION_HAS_CLOUD
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!initialized_ && !initialize()) return "";

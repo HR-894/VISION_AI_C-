@@ -131,7 +131,7 @@ void LLMController::checkIdleUnload() {
 
 // ═══════════════════ Core Generation ═══════════════════════════════
 
-std::string LLMController::generateResponse(const std::string& prompt) {
+std::string LLMController::generateResponse(const std::string& prompt, StreamCallback stream_cb) {
     std::lock_guard<std::recursive_mutex> lock(llm_mutex_);
     if (!active_backend_) return "";
 
@@ -162,7 +162,7 @@ std::string LLMController::generateResponse(const std::string& prompt) {
     }
 
     // Delegate to the active backend with conversation context
-    std::string result = active_backend_->generate(prompt, conversation_);
+    std::string result = active_backend_->generate(prompt, conversation_, stream_cb);
 
     // FAILOVER: If primary backend returned nothing, try the other one
     if (result.empty() && failover_enabled_) {
@@ -218,8 +218,8 @@ std::string LLMController::tryFailover(const std::string& prompt) {
     return result;
 }
 
-std::string LLMController::generateReactResponse(const std::string& prompt) {
-    return generateResponse(prompt);
+std::string LLMController::generateReactResponse(const std::string& prompt, StreamCallback stream_cb) {
+    return generateResponse(prompt, stream_cb);
 }
 
 // ═══════════════════ Embeddings ════════════════════════════════════
@@ -243,7 +243,8 @@ std::vector<float> LLMController::getEmbeddings(const std::string& text) {
 std::optional<json> LLMController::reactStep(
     const std::string& task,
     const json& observation,
-    const std::vector<json>& history) {
+    const std::vector<json>& history,
+    StreamCallback stream_cb) {
 
     // Build prompt using think()'s dual-mode system prompt as-is.
     // DO NOT add another system prompt here — think() already includes one.
@@ -262,7 +263,7 @@ std::optional<json> LLMController::reactStep(
 
     prompt += "Output ONLY valid JSON:";
 
-    std::string response = generateResponse(prompt);
+    std::string response = generateResponse(prompt, stream_cb);
     if (response.empty()) return std::nullopt;
 
     try {
@@ -375,7 +376,7 @@ BackendType LLMController::getActiveBackend() const {
     return active_type_;
 }
 
-std::future<std::string> LLMController::generateResponseAsync(const std::string& prompt) {
+std::future<std::string> LLMController::generateResponseAsync(const std::string& prompt, StreamCallback stream_cb) {
     // FIX BUG 9 (corrected): Truly async generation.
     // Wait for any in-flight work before launching a new task.
     if (async_future_.valid()) {
@@ -388,10 +389,10 @@ std::future<std::string> LLMController::generateResponseAsync(const std::string&
     
     // Launch the actual work thread. Store a shared_future so the destructor
     // can safely wait on it via async_future_.wait().
-    async_future_ = std::async(std::launch::async, [this, prompt, promise]() {
+    async_future_ = std::async(std::launch::async, [this, prompt, promise, stream_cb]() {
         std::string result;
         try {
-            result = generateResponse(prompt);
+            result = generateResponse(prompt, stream_cb);
         } catch (...) {
             promise->set_exception(std::current_exception());
             return result;
@@ -434,6 +435,18 @@ void LLMController::clearConversation() {
     if (!system_prompt_.empty()) {
         conversation_.emplace_back("system", system_prompt_);
     }
+}
+
+void LLMController::setTemperature(float temp) {
+    std::lock_guard<std::recursive_mutex> lock(llm_mutex_);
+    temperature_ = temp;
+    if (local_backend_) local_backend_->setTemperature(temp);
+}
+
+void LLMController::setTopP(float top_p) {
+    std::lock_guard<std::recursive_mutex> lock(llm_mutex_);
+    top_p_ = top_p;
+    if (local_backend_) local_backend_->setTopP(top_p);
 }
 
 void LLMController::pruneConversation() {

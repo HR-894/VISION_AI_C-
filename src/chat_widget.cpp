@@ -84,6 +84,17 @@ void ChatMessageModel::clear() {
     endResetModel();
 }
 
+void ChatMessageModel::streamToken(const QString& token) {
+    if (messages_.empty()) return; // Nowhere to stream to
+
+    int last_idx = static_cast<int>(messages_.size()) - 1;
+    messages_[last_idx].text += token;
+
+    // Tell the view that exactly this one item changed
+    QModelIndex idx = index(last_idx, 0);
+    emit dataChanged(idx, idx, {TextRole, Qt::DisplayRole});
+}
+
 // ═══════════════════ Delegate ═══════════════════════════════════════
 
 ChatMessageDelegate::ChatMessageDelegate(QObject* parent)
@@ -400,6 +411,11 @@ void ChatWidget::addMessage(const QString& sender, const QString& text,
 
 void ChatWidget::clear() {
     model_->clear();
+}
+
+void ChatWidget::streamToken(const QString& token) {
+    model_->streamToken(token);
+    scrollToBottom();
 }
 
 int ChatWidget::messageCount() const {

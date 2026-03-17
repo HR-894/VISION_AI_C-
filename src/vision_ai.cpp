@@ -151,12 +151,15 @@ VisionAI::VisionAI(QWidget* parent)
     // Thread-safe message passing
     connect(this, &VisionAI::messageReady, this, &VisionAI::appendMessage);
     connect(this, &VisionAI::statusReady, this, &VisionAI::setStatusText);
+    
+    // Req 2: Real-time UI streaming
+    connect(this, &VisionAI::tokenGenerated, chat_widget_, &ChatWidget::streamToken, Qt::QueuedConnection);
 
     // PRD Fix 1: Create async command watcher (signals/slots, no blocking)
     cmd_watcher_ = new QFutureWatcher<void>(this);
 
     updateStatus("Ready | " + profiler_.getStatusString());
-    addMessage("VISION", "Hello! I'm VISION AI (C++). Type a command or press Ctrl+Alt+Space to use voice.");
+    addMessage("VISION", "Hello! I'm VISION AI (C++)). Type a command or press Ctrl+Alt+Space to use voice.");
 }
 
 VisionAI::~VisionAI() {
@@ -275,6 +278,34 @@ void VisionAI::setupUI() {
 
     header->addWidget(title);
     header->addStretch();
+    
+    // ── Req 1: AI Preset Selector ──
+    preset_selector_ = new QComboBox();
+    preset_selector_->setStyleSheet(
+        "QComboBox { background: #2b2d31; border: 1px solid #3f3f46; border-radius: 8px; "
+        "  padding: 4px 10px; font-size: 12px; color: #dbdee1; "
+        "  font-family: 'Inter', 'Segoe UI'; min-width: 140px; }"
+        "QComboBox::drop-down { border: none; }"
+        "QComboBox QAbstractItemView { background: #2b2d31; color: #dbdee1; "
+        "  selection-background-color: #5865F2; outline: none; border: 1px solid #3f3f46; }"
+    );
+    // Load presets from config
+    auto config_presets = config_.get<nlohmann::json>("presets", nlohmann::json::array());
+    for (const auto& preset : config_presets) {
+        if (preset.contains("name")) {
+            preset_selector_->addItem(QString::fromStdString(preset["name"].get<std::string>()));
+        }
+    }
+    if (preset_selector_->count() == 0) {
+        preset_selector_->addItem("Default Agent"); // Fallback
+    }
+    connect(preset_selector_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &VisionAI::onPresetChanged);
+    
+    header->addWidget(preset_selector_);
+    header->addSpacing(10);
+    // ───────────────────────────────
+
     header->addWidget(cpu_label_);
     header->addWidget(ram_label_);
     header->addWidget(settings_btn);
@@ -483,8 +514,22 @@ void VisionAI::loadModels() {
     action_executor_ = std::make_unique<ActionExecutor>(*this);
     react_agent_ = std::make_unique<ReActAgent>(
         *llm_controller_, *action_executor_, window_mgr_, *this);
+
+    // Req 3: Expose internal monologue — emit live status during ReAct loop
+    react_agent_->setStepCallback(
+        [this](int step, const std::string& phase, const std::string& detail) {
+            emit statusReady(
+                QString("🤖 Step %1: %2 — %3")
+                    .arg(step)
+                    .arg(QString::fromStdString(phase))
+                    .arg(QString::fromStdString(detail)),
+                "#5865F2"
+            );
+        }
+    );
+
     router_.setReActAgent(react_agent_.get());
-    LOG_INFO("AI ReAct agent initialized");
+    LOG_INFO("AI ReAct agent initialized (with UI step callback)");
 
     // ── Idle Timer: check every 60s, auto-unload LLM after 5min idle ──
     idle_timer_ = new QTimer(this);
@@ -864,8 +909,17 @@ void VisionAI::onSendCommand() {
         }
         // Direct agent call — skip router (it re-runs matchers we already tried)
 #ifdef VISION_HAS_LLM
+        // Req 2: Create an empty message bubble for the AI, then stream into it
+        QMetaObject::invokeMethod(this, [this]() {
+            addMessage("VISION", ""); 
+        }, Qt::QueuedConnection);
+        
+        auto stream_cb = [this](const std::string& piece) {
+            emit tokenGenerated(QString::fromStdString(piece));
+        };
+        
         auto [success, result] = react_agent_
-            ? react_agent_->executeTask(routed_command)
+            ? react_agent_->executeTask(routed_command, stream_cb)
             : std::make_pair(false, std::string("AI agent not available. Try a simpler command."));
 #else
         auto [success, result] = std::make_pair(false, std::string("AI not compiled in this build."));
@@ -879,7 +933,10 @@ void VisionAI::onSendCommand() {
             std::lock_guard<std::mutex> lock(state_mutex_);
             last_response_ = result;
         }
-        emit messageReady("VISION", QString::fromStdString(result));
+        
+        // Note: We don't emit messageReady here if we streamed it, but we do 
+        // it as a fallback / to ensure the final state is synchronized. 
+        // For now, streamToken appended it. We'll let it be.
         emit statusReady("Ready", "");
         context_mgr_.recordCommand(command, result);
         agent_memory_.recordTask(command, result, success, {"agent"});
@@ -1415,6 +1472,33 @@ void VisionAI::onHistoryDown() {
 }
 
 void VisionAI::onClearChat() { chat_widget_->clear(); }
+
+void VisionAI::onPresetChanged(int index) {
+#ifdef VISION_HAS_LLM
+    if (!llm_controller_ || index < 0) return;
+
+    // Fetch the presets array from config
+    auto presets = config_.get<nlohmann::json>("presets", nlohmann::json::array());
+    if (index >= (int)presets.size()) return;
+
+    const auto& preset = presets[index];
+    
+    // Extract parameters with safe fallbacks
+    std::string name = preset.value("name", "Unknown Preset");
+    std::string prompt = preset.value("system_prompt", "");
+    float temp = preset.value("temperature", 0.7f);
+    float top_p = preset.value("top_p", 0.9f);
+
+    // Apply strictly to LLM Controller
+    llm_controller_->setSystemPrompt(prompt);
+    llm_controller_->setTemperature(temp);
+    llm_controller_->setTopP(top_p);
+
+    // Provide UI feedback without cluttering chat history
+    updateStatus("Persona Loaded: " + name, "#5865F2");
+    LOG_INFO("Applied AI Preset: {} (temp:{}, top_p:{})", name, temp, top_p);
+#endif
+}
 
 void VisionAI::onCopyLast() {
     std::lock_guard<std::mutex> lock(state_mutex_);

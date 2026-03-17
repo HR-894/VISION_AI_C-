@@ -256,7 +256,7 @@ nlohmann::json DeviceProfiler::getRecommendedConfig() const {
     // ── Dynamic context size based on total available memory ──
     int context_size;
     if (total_mb <= 8192) {        // ≤ 8 GB total
-        context_size = 2048;
+        context_size = 1024;        // Req 1: aggressive cap to avoid swap death
     } else if (total_mb <= 16384) { // ≤ 16 GB total
         context_size = 4096;
     } else {                        // > 16 GB (High tier, e.g. RTX 4050)
@@ -264,9 +264,9 @@ nlohmann::json DeviceProfiler::getRecommendedConfig() const {
     }
     cfg["context_size"] = context_size;
 
-    // ── Thread count: half of logical cores to prevent OS freezing ──
+    // Req 2: Reserve 2 cores for OS + Qt event loop — prevents "Not Responding"
     unsigned int hw_threads = std::thread::hardware_concurrency();
-    cfg["thread_count"] = std::max(1u, hw_threads / 2);
+    cfg["thread_count"] = std::max(1u, hw_threads > 2 ? hw_threads - 2 : 1u);
 
     switch (tier_) {
         case Tier::High:

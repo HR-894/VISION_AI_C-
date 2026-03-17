@@ -122,7 +122,7 @@ std::string WhisperEngine::transcribe(const std::vector<float>& audio) {
     wparams.print_realtime = false;
     wparams.print_timestamps = false;
     wparams.translate = false;
-    wparams.language = "en";
+    wparams.language = "auto";  // Req 3: Auto-detect language instead of forcing English
     wparams.single_segment = true;
     
     if (whisper_full(ctx_, wparams, audio.data(), (int)audio.size()) != 0) {

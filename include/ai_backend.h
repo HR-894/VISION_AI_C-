@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <functional>
 
 namespace vision {
 
@@ -63,9 +64,12 @@ public:
     /// Generate a response given a prompt and conversation history
     /// @param prompt   The current user message / formatted prompt
     /// @param history  Full conversation history for context reconstruction
+    /// @param stream_cb Optional callback invoked when a new text chunk is generated
     /// @return Generated text response (empty string on failure)
+    using StreamCallback = std::function<void(const std::string&)>;
     virtual std::string generate(const std::string& prompt,
-                                 const std::vector<Message>& history) = 0;
+                                 const std::vector<Message>& history,
+                                 StreamCallback stream_cb = nullptr) = 0;
 
     /// Get text embeddings (lightweight vector for semantic memory)
     /// @return Embedding vector (may be empty if not supported)

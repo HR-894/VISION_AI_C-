@@ -39,7 +39,8 @@ public:
     bool isReady() const override;
 
     std::string generate(const std::string& prompt,
-                         const std::vector<Message>& history) override;
+                         const std::vector<Message>& history,
+                         StreamCallback stream_cb = nullptr) override;
 
     std::vector<float> getEmbeddings(const std::string& text) override;
 

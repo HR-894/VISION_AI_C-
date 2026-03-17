@@ -58,6 +58,9 @@ public:
                     MessageType type = MessageType::AI);
     void clear();
 
+    /// Stream a token to the last message
+    void streamToken(const QString& token);
+
 private:
     std::vector<ChatMessage> messages_;
     std::vector<bool> copied_states_;  // per-message "Copied ✓" flag
@@ -127,6 +130,9 @@ public:
 
     /// Clear all messages
     void clear();
+
+    /// Stream a token to the last message (Req 2)
+    void streamToken(const QString& token);
 
     /// Get message count
     int messageCount() const;

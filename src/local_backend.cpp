@@ -87,6 +87,8 @@ bool LocalBackend::initialize() {
 
     auto model_params = llama_model_default_params();
     model_params.n_gpu_layers = gpu_layers_;
+    model_params.use_mmap  = true;   // Req 1: Ollama-style dynamic memory mapping
+    model_params.use_mlock = false;  // Req 1: prevent OOM kill on ≤8GB systems
 
     model_ = llama_model_load_from_file(model_path_.c_str(), model_params);
     if (!model_) {
@@ -310,14 +312,22 @@ std::string LocalBackend::generate(const std::string& prompt,
                 }
             }
         }
+        
+        // ── Req 2: Real-Time Token Streaming ──
+        // Convert token to string piece and fire callback immediately
+        char buf[128];
+        int n_chars = llama_token_to_piece(vocab, new_token, buf, sizeof(buf), 0, true);
+        if (n_chars > 0 && stream_cb) {
+            std::string piece(buf, n_chars);
+            stream_cb(piece);
+        }
 
         // End of generation
         if (llama_vocab_is_eog(vocab, new_token)) break;
 
         // Convert token to string
-        char buf[128];
-        int len = llama_token_to_piece(vocab, new_token, buf, sizeof(buf), 0, true);
-        if (len > 0) result.append(buf, len);
+        // The result string is built for the return value, even if streaming
+        if (n_chars > 0) result.append(buf, n_chars);
 
         // ── Context limit check ──
         if (n_cur >= context_size_ - 1) {

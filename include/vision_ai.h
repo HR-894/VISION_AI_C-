@@ -104,6 +104,7 @@ public:
 signals:
     void messageReady(const QString& sender, const QString& text);
     void statusReady(const QString& text, const QString& color);
+    void tokenGenerated(const QString& piece); // Req 2: Real-time UI streaming
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -118,6 +119,7 @@ private slots:
     void onSettingsClicked();
     void onHelpClicked();
     void onPresetClicked(const QString& preset);
+    void onPresetChanged(int index); // Req 1: Handle combo box changes
     void updateSystemStats();
     void onTrayActivated(QSystemTrayIcon::ActivationReason reason);
     void appendMessage(const QString& sender, const QString& text);
@@ -167,11 +169,13 @@ private:
     // ── UI Widgets ───────────────────────────────────────────────
     ChatWidget* chat_widget_ = nullptr;
     QLineEdit* input_field_ = nullptr;
-    QLabel* status_label_ = nullptr;
+    QLabel* raw_status_label_{nullptr};
+    QLabel* memory_label_{nullptr};
+    QComboBox* preset_selector_{nullptr}; // Req 1: Dropdown for AI Persona presets
     QLabel* cpu_label_ = nullptr;
     QLabel* ram_label_ = nullptr;
     QSystemTrayIcon* tray_icon_ = nullptr;
-    QTimer* stats_timer_ = nullptr;
+    QTimer* stats_timer_{nullptr};
 
     // ── Command history ──────────────────────────────────────────
     std::deque<std::string> command_history_;

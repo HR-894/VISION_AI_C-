@@ -60,19 +60,22 @@ public:
     /// Check if active backend is loaded/ready
     bool isModelLoaded() const;
 
-    /// Single ReAct iteration: given task, observation, history → next action
+    /// Single ReAct iteration: given task, observation, history    // ── ReAct orchestration ──────────────────────────────────────
     std::optional<nlohmann::json> reactStep(
         const std::string& task,
         const nlohmann::json& observation,
-        const std::vector<nlohmann::json>& history);
+        const std::vector<nlohmann::json>& history,
+        StreamCallback stream_cb = nullptr);
 
     /// Legacy one-shot command parsing (fallback)
     std::optional<nlohmann::json> parseAmbiguousCommand(
         const std::string& command,
         const std::string& context = "");
 
+    using StreamCallback = std::function<void(const std::string&)>;
+
     /// Generate raw response for the ReAct prompt
-    std::string generateReactResponse(const std::string& prompt);
+    std::string generateReactResponse(const std::string& prompt, StreamCallback stream_cb = nullptr);
 
     /// Get text embeddings (always uses LocalBackend)
     std::vector<float> getEmbeddings(const std::string& text);
@@ -114,7 +117,7 @@ public:
     BackendType getActiveBackend() const;
 
     /// Async generation — returns a future that doesn't block the caller
-    std::future<std::string> generateResponseAsync(const std::string& prompt);
+    std::future<std::string> generateResponseAsync(const std::string& prompt, StreamCallback stream_cb = nullptr);
 
     /// Add a user message to the persistent conversation
     void addUserMessage(const std::string& content);
@@ -124,6 +127,10 @@ public:
 
     /// Set the system prompt (replaces any existing system message)
     void setSystemPrompt(const std::string& prompt);
+
+    /// Dynamic Parameters
+    void setTemperature(float temp);
+    void setTopP(float top_p);
 
     /// Clear the entire conversation history
     void clearConversation();
@@ -155,6 +162,10 @@ private:
     // ── Context persistence ──────────────────────────────────────
     std::vector<Message> conversation_;
     std::string system_prompt_;
+    
+    // ── Generation parameters ────────────────────────────────────
+    float temperature_ = 0.7f;
+    float top_p_ = 0.9f;
 
     // ── Thread safety ────────────────────────────────────────────
     mutable std::recursive_mutex llm_mutex_;
@@ -172,7 +183,7 @@ private:
     std::shared_future<std::string> async_future_;  // Track outstanding async work
 
     // ── Internal helpers (shared across backends) ────────────────
-    std::string generateResponse(const std::string& prompt);
+    std::string generateResponse(const std::string& prompt, StreamCallback stream_cb = nullptr);
     nlohmann::json parseJsonStrict(const std::string& text);
     nlohmann::json validateAndFill(nlohmann::json parsed);
     std::string formatHistory(const std::vector<nlohmann::json>& history);
