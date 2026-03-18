@@ -96,15 +96,15 @@ private:
     static constexpr int kCopyBtnSize = 22;       // Copy button hit area
     static constexpr double kMaxBubbleRatio = 0.78;
 
-    // Colors
-    QColor bgAI_      = QColor(43, 45, 49);    // #2b2d31
-    QColor bgUser_    = QColor(56, 58, 64);    // #383a40
-    QColor bgSystem_  = QColor(30, 31, 34);    // #1e1f22
-    QColor accentAI_  = QColor(88, 101, 242);  // #5865F2 Discord Blurple
-    QColor accentUser_= QColor(87, 242, 135);  // #57F287 Green
-    QColor textColor_ = QColor(219, 222, 225); // #dbdee1
-    QColor dimText_   = QColor(148, 155, 164); // #949ba4
-    QColor hoverBg_   = QColor(63, 63, 70);    // #3f3f46
+    // Colors — Hacker Theme (Matrix Black + Neon Green)
+    QColor bgAI_      = QColor(17, 17, 17);    // #111111
+    QColor bgUser_    = QColor(26, 26, 26);    // #1A1A1A
+    QColor bgSystem_  = QColor(10, 10, 10);    // #0A0A0A
+    QColor accentAI_  = QColor(57, 255, 20);   // #39FF14 Neon Green
+    QColor accentUser_= QColor(0, 200, 255);   // #00C8FF Cyberpunk Cyan
+    QColor textColor_ = QColor(224, 224, 224); // #E0E0E0
+    QColor dimText_   = QColor(85, 85, 85);    // #555555
+    QColor hoverBg_   = QColor(26, 26, 26);    // #1A1A1A
 
     // Helpers
     QFont senderFont() const;

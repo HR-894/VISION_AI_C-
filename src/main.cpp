@@ -71,33 +71,33 @@ int WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/,
     // Force dark style
     app.setStyle(QStyleFactory::create("Fusion"));
     
-    // Dark palette
+    // Hacker Dark palette (Matrix Black + Neon Green)
     QPalette dark_palette;
-    dark_palette.setColor(QPalette::Window, QColor(30, 30, 30));
-    dark_palette.setColor(QPalette::WindowText, Qt::white);
-    dark_palette.setColor(QPalette::Base, QColor(20, 20, 20));
-    dark_palette.setColor(QPalette::AlternateBase, QColor(40, 40, 40));
-    dark_palette.setColor(QPalette::ToolTipBase, QColor(50, 50, 50));
-    dark_palette.setColor(QPalette::ToolTipText, Qt::white);
-    dark_palette.setColor(QPalette::Text, Qt::white);
-    dark_palette.setColor(QPalette::Button, QColor(45, 45, 45));
-    dark_palette.setColor(QPalette::ButtonText, Qt::white);
-    dark_palette.setColor(QPalette::BrightText, Qt::red);
-    dark_palette.setColor(QPalette::Link, QColor(80, 160, 255));
-    dark_palette.setColor(QPalette::Highlight, QColor(80, 120, 200));
-    dark_palette.setColor(QPalette::HighlightedText, Qt::white);
-    dark_palette.setColor(QPalette::Disabled, QPalette::Text, QColor(128, 128, 128));
-    dark_palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(128, 128, 128));
+    dark_palette.setColor(QPalette::Window, QColor(10, 10, 10));       // #0A0A0A
+    dark_palette.setColor(QPalette::WindowText, QColor(224, 224, 224)); // #E0E0E0
+    dark_palette.setColor(QPalette::Base, QColor(17, 17, 17));         // #111111
+    dark_palette.setColor(QPalette::AlternateBase, QColor(26, 26, 26)); // #1A1A1A
+    dark_palette.setColor(QPalette::ToolTipBase, QColor(17, 17, 17));
+    dark_palette.setColor(QPalette::ToolTipText, QColor(224, 224, 224));
+    dark_palette.setColor(QPalette::Text, QColor(224, 224, 224));
+    dark_palette.setColor(QPalette::Button, QColor(17, 17, 17));
+    dark_palette.setColor(QPalette::ButtonText, QColor(224, 224, 224));
+    dark_palette.setColor(QPalette::BrightText, QColor(57, 255, 20));   // #39FF14
+    dark_palette.setColor(QPalette::Link, QColor(57, 255, 20));
+    dark_palette.setColor(QPalette::Highlight, QColor(57, 255, 20));    // #39FF14
+    dark_palette.setColor(QPalette::HighlightedText, QColor(0, 0, 0));
+    dark_palette.setColor(QPalette::Disabled, QPalette::Text, QColor(80, 80, 80));
+    dark_palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(80, 80, 80));
     app.setPalette(dark_palette);
     
     // Global stylesheet
     app.setStyleSheet(R"(
-        QToolTip { color: #ffffff; background-color: #2d2d2d; border: 1px solid #555; padding: 4px; }
-        QScrollBar:vertical { background: #1e1e1e; width: 10px; margin: 0; }
-        QScrollBar::handle:vertical { background: #555; min-height: 20px; border-radius: 5px; }
+        QToolTip { color: #E0E0E0; background-color: #111111; border: 1px solid #39FF14; padding: 4px; }
+        QScrollBar:vertical { background: #0A0A0A; width: 10px; margin: 0; }
+        QScrollBar::handle:vertical { background: #39FF14; min-height: 20px; border-radius: 5px; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-        QScrollBar:horizontal { background: #1e1e1e; height: 10px; margin: 0; }
-        QScrollBar::handle:horizontal { background: #555; min-width: 20px; border-radius: 5px; }
+        QScrollBar:horizontal { background: #0A0A0A; height: 10px; margin: 0; }
+        QScrollBar::handle:horizontal { background: #39FF14; min-width: 20px; border-radius: 5px; }
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
     )");
     

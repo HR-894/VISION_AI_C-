@@ -35,12 +35,17 @@ std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command,
     LOG_INFO("ReAct agent starting task: {}", command);
     
     running_ = true;
-    action_history_.clear();
-    action_counts_.clear();
-    condensed_memory_.clear();  // PRD Fix 5: reset memory
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        action_history_.clear();
+        action_counts_.clear();
+        condensed_memory_.clear();
+    }
     
     std::string last_result;
     bool success = false;
+    int backoff_ms = 500;
+    std::string last_thought_action = "";
     
     for (int step = 0; step < max_steps_ && running_.load(); step++) {
         LOG_INFO("ReAct step {}/{}", step + 1, max_steps_);
@@ -80,7 +85,15 @@ std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command,
             break;
         }
         
-        // Check for repeated actions
+        // Check for exact repeating thought + action (state hashing)
+        std::string current_state_hash = thought + "|" + action;
+        if (current_state_hash == last_thought_action && !last_thought_action.empty()) {
+            LOG_WARN("Exact thought/action loop detected: {}", current_state_hash);
+            last_result = "I am stuck executing this and cannot proceed.";
+            break;
+        }
+        last_thought_action = current_state_hash;
+
         std::string action_key = action + ":" + params.dump();
         if (isActionRepeated(action_key)) {
             LOG_WARN("Action repeated too many times: {}", action);
@@ -101,10 +114,16 @@ std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command,
             {"result", act_result},
             {"success", act_success}
         };
-        action_history_.push_back(history_entry);
+
+        bool needs_summary = false;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            action_history_.push_back(history_entry);
+            needs_summary = action_history_.size() > 5;
+        }
         
         // PRD Fix 5: Summarize old steps instead of hard-deleting
-        if (action_history_.size() > 5) {
+        if (needs_summary) {
             summarizeHistory();
         }
         
@@ -112,11 +131,15 @@ std::pair<bool, std::string> ReActAgent::executeTask(const std::string& command,
         
         if (!act_success) {
             LOG_WARN("Action failed: {}", act_result);
-            // Continue — the agent can self-correct
+            // Append failure implicitly to the next step so agent is aware
+            last_result = "[PREVIOUS ACTION FAILED: " + act_result + "] " + last_result;
+            backoff_ms = std::min(2000, backoff_ms * 2);
+        } else {
+            backoff_ms = 500; // reset on success
         }
         
-        // Small delay between steps
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        // Exponential backoff delay
+        std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
     }
     
     running_ = false;
@@ -132,6 +155,7 @@ void ReActAgent::stop() {
 }
 
 std::vector<json> ReActAgent::getActionHistory() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return action_history_;
 }
 
@@ -145,16 +169,19 @@ json ReActAgent::observe() {
     ctx["context"] = app_.contextMgr().getFullContext();
     
     // Previous actions summary
-    if (!action_history_.empty()) {
-        ctx["previous_actions"] = json::array();
-        // Only include last 3 actions to avoid context overflow
-        int start = std::max(0, (int)action_history_.size() - 3);
-        for (int i = start; i < (int)action_history_.size(); i++) {
-            ctx["previous_actions"].push_back({
-                {"action", action_history_[i]["action"]},
-                {"result", action_history_[i]["result"]},
-                {"success", action_history_[i]["success"]}
-            });
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (!action_history_.empty()) {
+            ctx["previous_actions"] = json::array();
+            // Only include last 3 actions to avoid context overflow
+            int start = std::max(0, (int)action_history_.size() - 3);
+            for (int i = start; i < (int)action_history_.size(); i++) {
+                ctx["previous_actions"].push_back({
+                    {"action", action_history_[i]["action"]},
+                    {"result", action_history_[i]["result"]},
+                    {"success", action_history_[i]["success"]}
+                });
+            }
         }
     }
     
@@ -189,9 +216,12 @@ std::optional<json> ReActAgent::think(const std::string& cmd, const json& ctx, S
         "4. Be smart, helpful, and conversational like a real assistant.\n\n";
 
     // PRD Fix 5: Inject condensed memory from earlier steps
-    if (!condensed_memory_.empty()) {
-        smart_prompt += "[MEMORY STATE — summary of earlier steps]\n" +
-                        condensed_memory_ + "\n\n";
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (!condensed_memory_.empty()) {
+            smart_prompt += "[MEMORY STATE — summary of earlier steps]\n" +
+                            condensed_memory_ + "\n\n";
+        }
     }
 
     smart_prompt += "[USER] " + cmd;
@@ -250,6 +280,7 @@ json ReActAgent::fallbackThink(const std::string& cmd) {
 }
 
 bool ReActAgent::isActionRepeated(const std::string& key) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     action_counts_[key]++;
     return action_counts_[key] > 3;
 }
@@ -260,18 +291,23 @@ void ReActAgent::summarizeHistory() {
         "Summarize these agent actions into ONE short paragraph (max 100 words).\n"
         "Focus on: what was the goal, what actions were taken, what results occurred.\n\n";
     
-    int to_summarize = std::min(3, (int)action_history_.size());
-    for (int i = 0; i < to_summarize; i++) {
-        summary_prompt += "Step " + std::to_string(i + 1) + ": ";
-        summary_prompt += "Action=" + action_history_[0].value("action", "?");
-        summary_prompt += ", Result=" + action_history_[0].value("result", "?");
-        summary_prompt += "\n";
-        action_history_.erase(action_history_.begin());
+    int to_summarize = 0;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        to_summarize = std::min(3, (int)action_history_.size());
+        for (int i = 0; i < to_summarize; i++) {
+            summary_prompt += "Step " + std::to_string(i + 1) + ": ";
+            summary_prompt += "Action=" + action_history_[0].value("action", "?");
+            summary_prompt += ", Result=" + action_history_[0].value("result", "?");
+            summary_prompt += "\n";
+            action_history_.erase(action_history_.begin());
+        }
     }
     
     // Use LLM to generate summary (lightweight single-shot call)
     auto result = llm_.generateReactResponse(summary_prompt);
     if (!result.empty()) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
         if (!condensed_memory_.empty()) {
             condensed_memory_ += " | " + result;
         } else {

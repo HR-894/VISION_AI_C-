@@ -45,15 +45,19 @@ namespace vision {
 // ═══════════════════ Constructor / Destructor ════════════════════════
 
 VectorMemory::VectorMemory() {
-    allocateMatrix();
+    // Allocation deferred until dimension is known (store or load)
 }
 
 VectorMemory::~VectorMemory() = default;  // AlignedPtr auto-frees!
 
-void VectorMemory::allocateMatrix() {
+void VectorMemory::allocateMatrix(int dim) {
+    if (matrix_) return; // already allocated
+    dim_ = dim;
+    padded_dim_ = ((dim_ + 7) / 8) * 8;
+    
     // 32-byte aligned allocation for AVX2 _mm256_load_ps
     // RAII managed via AlignedPtr — auto-freed on destruction/exception
-    size_t total_bytes = static_cast<size_t>(kMaxMemoryEntries) * kPaddedDim * sizeof(float);
+    size_t total_bytes = static_cast<size_t>(kMaxMemoryEntries) * padded_dim_ * sizeof(float);
 #ifdef _MSC_VER
     float* raw = static_cast<float*>(_aligned_malloc(total_bytes, 32));
 #else
@@ -63,7 +67,7 @@ void VectorMemory::allocateMatrix() {
     if (matrix_) {
         std::memset(matrix_.get(), 0, total_bytes);
         LOG_INFO("VectorMemory: Allocated {}MB aligned matrix ({} x {})",
-                 total_bytes / (1024 * 1024), kMaxMemoryEntries, kPaddedDim);
+                 total_bytes / (1024 * 1024), kMaxMemoryEntries, padded_dim_);
     } else {
         LOG_ERROR("VectorMemory: Failed to allocate aligned matrix!");
     }
@@ -151,9 +155,20 @@ bool VectorMemory::store(const std::string& text, const std::string& context,
     }
 
     auto embedding = embed_fn_(text);
-    if (embedding.size() < kEmbeddingDim) {
-        LOG_ERROR("VectorMemory: Embedding too short ({} < {})",
-                  embedding.size(), kEmbeddingDim);
+    if (embedding.empty()) {
+        LOG_ERROR("VectorMemory: Returned embedding is empty");
+        return false;
+    }
+    
+    // Dynamically set dim if not initialized
+    if (dim_ == 0) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (dim_ == 0) allocateMatrix(embedding.size());
+    }
+
+    if (embedding.size() != dim_) {
+        LOG_ERROR("VectorMemory: Embedding length mismatch ({} != {})",
+                  embedding.size(), dim_);
         return false;
     }
 
@@ -173,10 +188,10 @@ bool VectorMemory::storeWithEmbedding(const std::string& text, const float* embe
     }
 
     // Copy embedding to aligned matrix row
-    // Zero-pad to kPaddedDim (handles dim < kPaddedDim case)
+    // Zero-pad to padded_dim_
     float* dest = row(count_);
-    std::memset(dest, 0, kPaddedDim * sizeof(float));
-    std::memcpy(dest, embedding, kEmbeddingDim * sizeof(float));
+    std::memset(dest, 0, padded_dim_ * sizeof(float));
+    std::memcpy(dest, embedding, dim_ * sizeof(float));
 
     // Store metadata
     MemoryEntry entry;
@@ -208,7 +223,7 @@ std::vector<MemorySearchResult> VectorMemory::search(const std::string& query,
     }
     if (!fn) return {};
     auto embedding = fn(query);
-    if (embedding.size() < kEmbeddingDim) return {};
+    if (embedding.size() != dim_) return {};
     return searchByEmbedding(embedding.data(), top_k, min_similarity);
 }
 
@@ -223,16 +238,16 @@ std::vector<MemorySearchResult> VectorMemory::searchByEmbedding(
     AlignedPtr aligned_query;
     {
 #ifdef _MSC_VER
-        float* raw = static_cast<float*>(_aligned_malloc(kPaddedDim * sizeof(float), 32));
+        float* raw = static_cast<float*>(_aligned_malloc(padded_dim_ * sizeof(float), 32));
 #else
-        float* raw = static_cast<float*>(aligned_alloc(32, kPaddedDim * sizeof(float)));
+        float* raw = static_cast<float*>(aligned_alloc(32, padded_dim_ * sizeof(float)));
 #endif
         aligned_query.reset(raw);
     }
     if (!aligned_query) return {};
 
-    std::memset(aligned_query.get(), 0, kPaddedDim * sizeof(float));
-    std::memcpy(aligned_query.get(), query_embedding, kEmbeddingDim * sizeof(float));
+    std::memset(aligned_query.get(), 0, padded_dim_ * sizeof(float));
+    std::memcpy(aligned_query.get(), query_embedding, dim_ * sizeof(float));
 
     // ── Flat search: compute cosine similarity against ALL vectors ──
     // With AVX2: 10,000 × 768-dim = ~2ms on modern CPU
@@ -246,7 +261,7 @@ std::vector<MemorySearchResult> VectorMemory::searchByEmbedding(
     scores.reserve(count_);
 
     for (int i = 0; i < count_; i++) {
-        float sim = cosineSimilarity(aligned_query.get(), row(i), kPaddedDim);
+        float sim = cosineSimilarity(aligned_query.get(), row(i), padded_dim_);
         if (sim >= min_similarity) {
             scores.push_back({i, sim});
         }
@@ -315,7 +330,7 @@ void VectorMemory::evictOldest() {
     int last = count_ - 1;
     if (oldest_idx != last) {
         std::swap(entries_[oldest_idx], entries_[last]);
-        std::memcpy(row(oldest_idx), row(last), kPaddedDim * sizeof(float));
+        std::memcpy(row(oldest_idx), row(last), padded_dim_ * sizeof(float));
     }
     count_--;
 }
@@ -331,7 +346,7 @@ int VectorMemory::purgeOlderThan(int seconds) {
             int last = count_ - 1;
             if (i != last) {
                 std::swap(entries_[i], entries_[last]);
-                std::memcpy(row(i), row(last), kPaddedDim * sizeof(float));
+                std::memcpy(row(i), row(last), padded_dim_ * sizeof(float));
             }
             count_--;
             purged++;
@@ -358,14 +373,14 @@ bool VectorMemory::save(const std::string& path) const {
     // Write header
     FileHeader header;
     header.count = count_;
-    header.dim = kEmbeddingDim;
+    header.dim = dim_;
 
     // Placeholder for metadata offset (will be filled after matrix write)
     auto header_pos = file.tellp();
     file.write(reinterpret_cast<const char*>(&header), sizeof(header));
 
     // Write matrix (raw floats — memcpy speed on load)
-    size_t matrix_bytes = static_cast<size_t>(count_) * kPaddedDim * sizeof(float);
+    size_t matrix_bytes = static_cast<size_t>(count_) * padded_dim_ * sizeof(float);
     file.write(reinterpret_cast<const char*>(matrix_.get()), matrix_bytes);
 
     // Record metadata offset
@@ -415,14 +430,16 @@ bool VectorMemory::load(const std::string& path) {
         return false;
     }
 
-    if (header.count > kMaxMemoryEntries || header.dim != kEmbeddingDim) {
+    if (header.count > kMaxMemoryEntries || header.dim <= 0) {
         LOG_ERROR("VectorMemory: Incompatible format (count={}, dim={})",
                   header.count, header.dim);
         return false;
     }
+    
+    allocateMatrix(header.dim);
 
     // Read matrix (raw memcpy — fastest possible)
-    size_t matrix_bytes = static_cast<size_t>(header.count) * kPaddedDim * sizeof(float);
+    size_t matrix_bytes = static_cast<size_t>(header.count) * padded_dim_ * sizeof(float);
     file.read(reinterpret_cast<char*>(matrix_.get()), matrix_bytes);
 
     // Read metadata

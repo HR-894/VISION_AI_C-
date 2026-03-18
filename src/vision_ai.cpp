@@ -235,10 +235,10 @@ void VisionAI::setupUI() {
     setMinimumSize(700, 500);
     resize(850, 650);
 
-    // ── Global Discord Dark Theme ────────────────────────────────
+    // ── Global Hacker Dark Theme (Matrix Black + Neon Green) ────
     setStyleSheet(
-        "QMainWindow, QWidget { background-color: #1e1f22; color: #dbdee1; }"
-        "QToolTip { background-color: #2b2d31; color: #dbdee1; border: 1px solid #3f3f46; "
+        "QMainWindow, QWidget { background-color: #0A0A0A; color: #E0E0E0; }"
+        "QToolTip { background-color: #111111; color: #E0E0E0; border: 1px solid #39FF14; "
         "  border-radius: 6px; padding: 4px 8px; font-size: 12px; }"
     );
 
@@ -252,28 +252,28 @@ void VisionAI::setupUI() {
     auto* header = new QHBoxLayout();
     auto* title = new QLabel("🔮 VISION AI");
     title->setStyleSheet(
-        "font-size: 22px; font-weight: bold; color: #5865F2; "
+        "font-size: 22px; font-weight: bold; color: #39FF14; "
         "font-family: 'Inter', 'Segoe UI', sans-serif;");
 
     cpu_label_ = new QLabel("CPU: --");
-    cpu_label_->setStyleSheet("color: #949ba4; font-size: 11px; font-family: 'Inter', 'Segoe UI';");
+    cpu_label_->setStyleSheet("color: #555555; font-size: 11px; font-family: 'Inter', 'Segoe UI';");
     ram_label_ = new QLabel("RAM: --");
-    ram_label_->setStyleSheet("color: #949ba4; font-size: 11px; font-family: 'Inter', 'Segoe UI';");
+    ram_label_->setStyleSheet("color: #555555; font-size: 11px; font-family: 'Inter', 'Segoe UI';");
 
     auto* settings_btn = new QPushButton("⚙");
     settings_btn->setFixedSize(34, 34);
     settings_btn->setStyleSheet(
-        "QPushButton { font-size: 16px; border: 1px solid #3f3f46; border-radius: 8px; "
-        "  background: #2b2d31; color: #dbdee1; }"
-        "QPushButton:hover { background: #3f3f46; border-color: #5865F2; }");
+        "QPushButton { font-size: 16px; border: 1px solid #1A1A1A; border-radius: 8px; "
+        "  background: #111111; color: #E0E0E0; }"
+        "QPushButton:hover { background: #1A1A1A; border-color: #39FF14; color: #39FF14; }");
     connect(settings_btn, &QPushButton::clicked, this, &VisionAI::onSettingsClicked);
 
     auto* help_btn = new QPushButton("?");
     help_btn->setFixedSize(34, 34);
     help_btn->setStyleSheet(
-        "QPushButton { font-size: 16px; border: 1px solid #3f3f46; border-radius: 8px; "
-        "  background: #2b2d31; color: #dbdee1; }"
-        "QPushButton:hover { background: #3f3f46; border-color: #5865F2; }");
+        "QPushButton { font-size: 16px; border: 1px solid #1A1A1A; border-radius: 8px; "
+        "  background: #111111; color: #E0E0E0; }"
+        "QPushButton:hover { background: #1A1A1A; border-color: #39FF14; color: #39FF14; }");
     connect(help_btn, &QPushButton::clicked, this, &VisionAI::onHelpClicked);
 
     header->addWidget(title);
@@ -282,12 +282,12 @@ void VisionAI::setupUI() {
     // ── Req 1: AI Preset Selector ──
     preset_selector_ = new QComboBox();
     preset_selector_->setStyleSheet(
-        "QComboBox { background: #2b2d31; border: 1px solid #3f3f46; border-radius: 8px; "
-        "  padding: 4px 10px; font-size: 12px; color: #dbdee1; "
+        "QComboBox { background: #111111; border: 1px solid #1A1A1A; border-radius: 8px; "
+        "  padding: 4px 10px; font-size: 12px; color: #E0E0E0; "
         "  font-family: 'Inter', 'Segoe UI'; min-width: 140px; }"
         "QComboBox::drop-down { border: none; }"
-        "QComboBox QAbstractItemView { background: #2b2d31; color: #dbdee1; "
-        "  selection-background-color: #5865F2; outline: none; border: 1px solid #3f3f46; }"
+        "QComboBox QAbstractItemView { background: #111111; color: #E0E0E0; "
+        "  selection-background-color: #39FF14; selection-color: #000000; outline: none; border: 1px solid #1A1A1A; }"
     );
     // Load presets from external presets.json
     nlohmann::json config_presets = nlohmann::json::array();
@@ -311,6 +311,42 @@ void VisionAI::setupUI() {
     header->addSpacing(10);
     // ───────────────────────────────
 
+    // ── Agent Mode Toggle ──
+    mode_toggle_ = new QCheckBox("Agent Mode");
+    mode_toggle_->setToolTip("Uncheck for instant Chat-Only mode (faster, no PC control)");
+    mode_toggle_->setChecked(false); // Default: Chat Only (safe)
+    mode_toggle_->setStyleSheet(
+        "QCheckBox { color: #E0E0E0; spacing: 6px; font-size: 12px; "
+        "  font-family: 'Inter', 'Segoe UI'; }"
+        "QCheckBox::indicator { width: 18px; height: 18px; border-radius: 3px; "
+        "  border: 1px solid #1A1A1A; background: #111111; }"
+        "QCheckBox::indicator:checked { background: #39FF14; border: 1px solid #39FF14; }"
+    );
+    connect(mode_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
+        agent_mode_enabled_ = checked;
+        // Switch input glow color: Neon Green for Agent, subtle grey for Chat
+        if (checked) {
+            input_field_->setStyleSheet(
+                "QLineEdit { background: #0A0A0A; border: 2px solid #39FF14; border-radius: 10px; "
+                "  padding: 10px 16px; font-size: 14px; color: #E0E0E0; "
+                "  font-family: 'Inter', 'Segoe UI', sans-serif; }"
+                "QLineEdit:focus { border-color: #39FF14; background: #000000; }"
+                "QLineEdit::placeholder { color: #555555; }");
+            input_field_->setPlaceholderText("🤖 Agent Mode — I can control your PC...");
+        } else {
+            input_field_->setStyleSheet(
+                "QLineEdit { background: #111111; border: 2px solid #1A1A1A; border-radius: 10px; "
+                "  padding: 10px 16px; font-size: 14px; color: #E0E0E0; "
+                "  font-family: 'Inter', 'Segoe UI', sans-serif; }"
+                "QLineEdit:focus { border-color: #555555; }"
+                "QLineEdit::placeholder { color: #555555; }");
+            input_field_->setPlaceholderText("💬 Chat Only — Ask me anything...");
+        }
+    });
+    header->addWidget(mode_toggle_);
+    header->addSpacing(6);
+    // ─────────────────────────────
+
     header->addWidget(cpu_label_);
     header->addWidget(ram_label_);
     header->addWidget(settings_btn);
@@ -333,11 +369,11 @@ void VisionAI::setupUI() {
     for (const auto& [label, cmd] : preset_items) {
         auto* btn = new QPushButton(QString::fromStdString(label));
         btn->setStyleSheet(
-            "QPushButton { background: #2b2d31; border: 1px solid #3f3f46; border-radius: 8px; "
-            "  padding: 6px 14px; font-size: 11px; color: #dbdee1; "
+            "QPushButton { background: #111111; border: 1px solid #1A1A1A; border-radius: 8px; "
+            "  padding: 6px 14px; font-size: 11px; color: #E0E0E0; "
             "  font-family: 'Inter', 'Segoe UI'; }"
-            "QPushButton:hover { background: #3f3f46; border-color: #5865F2; color: #fff; }"
-            "QPushButton:pressed { background: #5865F2; }");
+            "QPushButton:hover { background: #1A1A1A; border-color: #39FF14; color: #39FF14; }"
+            "QPushButton:pressed { background: #39FF14; color: #000000; }");
         connect(btn, &QPushButton::clicked, [this, c = cmd]() {
             onPresetClicked(QString::fromStdString(c));
         });
@@ -349,22 +385,22 @@ void VisionAI::setupUI() {
     auto* input_layout = new QHBoxLayout();
     
     input_field_ = new QLineEdit();
-    input_field_->setPlaceholderText("Type a command... (Enter to send, Ctrl+Alt+Space for voice)");
+    input_field_->setPlaceholderText("💬 Chat Only — Ask me anything...");
     input_field_->setStyleSheet(
-        "QLineEdit { background: #2b2d31; border: 2px solid #3f3f46; border-radius: 10px; "
-        "  padding: 10px 16px; font-size: 14px; color: #dbdee1; "
+        "QLineEdit { background: #111111; border: 2px solid #1A1A1A; border-radius: 10px; "
+        "  padding: 10px 16px; font-size: 14px; color: #E0E0E0; "
         "  font-family: 'Inter', 'Segoe UI', sans-serif; }"
-        "QLineEdit:focus { border-color: #5865F2; }"
-        "QLineEdit::placeholder { color: #949ba4; }");
+        "QLineEdit:focus { border-color: #555555; }"
+        "QLineEdit::placeholder { color: #555555; }");
     connect(input_field_, &QLineEdit::returnPressed, this, &VisionAI::onSendCommand);
 
     auto* send_btn = new QPushButton("▶");
     send_btn->setFixedSize(42, 40);
     send_btn->setStyleSheet(
-        "QPushButton { background: #5865F2; border: none; border-radius: 10px; "
-        "  font-size: 16px; color: white; }"
-        "QPushButton:hover { background: #4752C4; }"
-        "QPushButton:pressed { background: #3C45A5; }");
+        "QPushButton { background: transparent; border: 1px solid #39FF14; border-radius: 10px; "
+        "  font-size: 16px; color: #39FF14; }"
+        "QPushButton:hover { background: #39FF14; color: #000000; }"
+        "QPushButton:pressed { background: #2ECC40; color: #000000; }");
     connect(send_btn, &QPushButton::clicked, this, &VisionAI::onSendCommand);
 
     input_layout->addWidget(input_field_, 1);
@@ -374,7 +410,7 @@ void VisionAI::setupUI() {
     // ── Status bar ───────────────────────────────────────────────
     status_label_ = new QLabel("● Ready");
     status_label_->setStyleSheet(
-        "color: #57F287; font-size: 11px; padding: 4px 8px; "
+        "color: #39FF14; font-size: 11px; padding: 4px 8px; "
         "font-family: 'Inter', 'Segoe UI';");
     main_layout->addWidget(status_label_);
     
@@ -762,6 +798,44 @@ void VisionAI::onSendCommand() {
         llm_controller_->cancelGeneration();
     }
 #endif
+
+    // ═══ CHAT ONLY MODE: Instant bypass (no ReAct Agent) ═══════════════
+    if (!agent_mode_enabled_) {
+#ifdef VISION_HAS_LLM
+        emit statusReady("Generating reply...", "#39FF14");
+        
+        // Create an empty bubble for streaming
+        QMetaObject::invokeMethod(this, [this]() {
+            addMessage("VISION", "");
+        }, Qt::QueuedConnection);
+        
+        cmd_future_ = QtConcurrent::run([this, command]() {
+            try {
+                if (is_shutting_down_.load()) return;
+                auto stream_cb = [this](const std::string& piece) {
+                    emit tokenGenerated(QString::fromStdString(piece));
+                };
+                std::string reply = llm_controller_->generateResponse(command, stream_cb);
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex_);
+                    last_response_ = reply;
+                }
+                context_mgr_.recordCommand(command, reply);
+                emit statusReady("Ready", "");
+            } catch (const std::exception& e) {
+                emit messageReady("SYSTEM", QString("Error: %1").arg(e.what()));
+                emit statusReady("Ready", "");
+            } catch (...) {
+                emit messageReady("SYSTEM", QString("An unexpected error occurred."));
+                emit statusReady("Ready", "");
+            }
+        });
+        return;
+#else
+        addMessage("SYSTEM", "AI not compiled in this build.");
+        return;
+#endif
+    }
     // If a previous future is still running, cancel will cause it to exit soon.
     // QtConcurrent manages the thread pool — no manual join needed.
     cmd_future_ = QtConcurrent::run([this, command]() {
@@ -1528,37 +1602,39 @@ void VisionAI::showHelpDialog() {
 }
 
 void VisionAI::showSettingsDialog() {
-    SettingsDialog dlg(config_, this);
+    if (!settings_dlg_) {
+        settings_dlg_ = new SettingsDialog(config_, this);
 
-    // Wire API key changes to CloudBackend in real-time
-    connect(&dlg, &SettingsDialog::apiKeyChanged, this, [this](const QString& key) {
+        // Wire API key changes to CloudBackend in real-time
+        connect(settings_dlg_, &SettingsDialog::apiKeyChanged, this, [this](const QString& key) {
 #ifdef VISION_HAS_LLM
-        if (llm_controller_) {
-            llm_controller_->setCloudApiKey(key.toStdString());
-            LOG_INFO("Settings: API key updated in CloudBackend");
-        }
-#endif
-    });
-
-    // Wire engine mode changes
-    connect(&dlg, &SettingsDialog::engineChanged, this, [this](const QString& mode) {
-        LOG_INFO("Settings: Engine mode changed to '{}'", mode.toStdString());
-#ifdef VISION_HAS_LLM
-        if (llm_controller_) {
-            if (mode == "cloud") {
-                llm_controller_->setBackend(BackendType::Cloud);
-            } else if (mode == "local") {
-                llm_controller_->setBackend(BackendType::Local);
+            if (llm_controller_) {
+                llm_controller_->setCloudApiKey(key.toStdString());
+                LOG_INFO("Settings: API key updated in CloudBackend");
             }
-            // Hybrid = let LLMController auto-decide
-        }
 #endif
-    });
+        });
 
-    dlg.exec();
+        // Wire engine mode changes
+        connect(settings_dlg_, &SettingsDialog::engineChanged, this, [this](const QString& mode) {
+            LOG_INFO("Settings: Engine mode changed to '{}'", mode.toStdString());
+#ifdef VISION_HAS_LLM
+            if (llm_controller_) {
+                if (mode == "cloud") {
+                    llm_controller_->setBackend(BackendType::Cloud);
+                } else if (mode == "local") {
+                    llm_controller_->setBackend(BackendType::Local);
+                }
+                // Hybrid = let LLMController auto-decide
+            }
+#endif
+        });
+    }
+
+    settings_dlg_->exec();
 
     // If settings were modified, check for first-run prompt
-    if (dlg.wasModified()) {
+    if (settings_dlg_->wasModified()) {
         std::string engine = config_.get<std::string>("engine_mode", "local");
         std::string key = config_.get<std::string>("cloud_api_key_encrypted", "");
 

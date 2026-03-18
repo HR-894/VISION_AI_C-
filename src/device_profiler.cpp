@@ -256,7 +256,7 @@ nlohmann::json DeviceProfiler::getRecommendedConfig() const {
     // ── Dynamic context size based on total available memory ──
     int context_size;
     if (total_mb <= 8192) {        // ≤ 8 GB total
-        context_size = 1024;        // Req 1: aggressive cap to avoid swap death
+        context_size = 2048;        // PRD Fix 5: Minimum baseline is 2048
     } else if (total_mb <= 16384) { // ≤ 16 GB total
         context_size = 4096;
     } else {                        // > 16 GB (High tier, e.g. RTX 4050)
@@ -268,21 +268,39 @@ nlohmann::json DeviceProfiler::getRecommendedConfig() const {
     unsigned int hw_threads = std::thread::hardware_concurrency();
     cfg["thread_count"] = std::max(1u, hw_threads > 2 ? hw_threads - 2 : 1u);
 
+    // PRD Fix 4: UMA (Integrated GPU) Detection
+    std::string vendor = profile_.value("/gpu/vendor"_json_pointer, "unknown");
+    bool is_apu = ((vendor == "amd" || vendor == "intel") && gpu_mb <= 2048);
+
+    if (is_apu) {
+        LOG_WARN("APU / Integrated GPU detected ({} with {}MB VRAM). Forcing layers to 0.", vendor, gpu_mb);
+        cfg["gpu_layers"] = 0; // Fallback to CPU to avoid shared memory swap death
+    } else {
+        switch (tier_) {
+            case Tier::High:
+                cfg["gpu_layers"] = 99;
+                break;
+            case Tier::Mid:
+                cfg["gpu_layers"] = 20;
+                break;
+            case Tier::Low:
+                cfg["gpu_layers"] = 0;
+                break;
+        }
+    }
+
     switch (tier_) {
         case Tier::High:
             cfg["whisper_model"] = "small";
             cfg["llm_model"] = "3B";
-            cfg["gpu_layers"] = 99;
             break;
         case Tier::Mid:
             cfg["whisper_model"] = "base";
             cfg["llm_model"] = "3B";
-            cfg["gpu_layers"] = 20;
             break;
         case Tier::Low:
             cfg["whisper_model"] = "tiny";
             cfg["llm_model"] = "1B";
-            cfg["gpu_layers"] = 0;
             break;
     }
 

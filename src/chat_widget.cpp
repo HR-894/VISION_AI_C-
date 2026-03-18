@@ -306,7 +306,7 @@ void ChatMessageDelegate::paint(QPainter* painter,
         QFont copyFont = timestampFont();
         copyFont.setBold(true);
         painter->setFont(copyFont);
-        painter->setPen(QColor(87, 242, 135));  // #57F287 green
+        painter->setPen(QColor(57, 255, 20));   // #39FF14 Neon Green
         painter->drawText(copyBtn, Qt::AlignCenter, "✓");
     } else if (isHovered) {
         // Show copy icon on hover

@@ -191,11 +191,17 @@ std::string LocalBackend::generate(const std::string& prompt,
                  original_count, n_tokens);
     }
 
+    // ── PRD Fix 5: Context Suffocation ──
+    // If context is tiny (2048), cap generation to 256 to prevent it from overwriting the entire short-term memory cache in one go.
+    int safe_max_tokens = max_tokens_;
+    if (context_size_ <= 2048) {
+        safe_max_tokens = std::min(256, max_tokens_);
+    }
+
     // ── PRD Fix 4: Rolling KV Cache — preserve system prompt + recent context ──
-    // Instead of llama_memory_clear (which causes total amnesia), we use a
-    // rolling window: keep the first 128 tokens (system prompt) and trim the
-    // middle when approaching the context limit.
-    if (n_past_ + n_tokens > context_size_ - max_tokens_) {
+    if (n_past_ + n_tokens > context_size_ - safe_max_tokens) {
+        // Triggered summarizer warning conceptually handled by ReActAgent,
+        // but here we forcefully roll the cache window.
         int keep_prefix = std::min(128, n_past_ / 4);  // System prompt tokens
         int keep_suffix = context_size_ / 4;             // Recent context
         int discard_from = keep_prefix;
@@ -251,7 +257,7 @@ std::string LocalBackend::generate(const std::string& prompt,
     std::string result;
     int n_cur = n_past_;  // Fix 4: start from KV cursor position
 
-    for (int i = 0; i < max_tokens_; i++) {
+    for (int i = 0; i < safe_max_tokens; i++) {
         // ── Emergency Stop check ──
         if (cancel_generation_.load()) {
             LOG_WARN("LocalBackend: Generation cancelled (emergency stop)");

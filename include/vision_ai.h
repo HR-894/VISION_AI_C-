@@ -9,6 +9,8 @@
 
 #include <string>
 #include <vector>
+#include <QComboBox>
+#include <QCheckBox>
 #include <memory>
 #include <deque>
 #include <atomic>
@@ -172,6 +174,8 @@ private:
     QLabel* raw_status_label_{nullptr};
     QLabel* memory_label_{nullptr};
     QComboBox* preset_selector_{nullptr}; // Req 1: Dropdown for AI Persona presets
+    QCheckBox* mode_toggle_{nullptr};      // Agent Mode vs Chat Only toggle
+    bool agent_mode_enabled_ = false;       // Default: Chat Only (safe)
     QLabel* cpu_label_ = nullptr;
     QLabel* ram_label_ = nullptr;
     QSystemTrayIcon* tray_icon_ = nullptr;
@@ -192,6 +196,7 @@ private:
     std::thread model_load_thread_;  // Joined in destructor (C3 fix)
     QFutureWatcher<void>* cmd_watcher_ = nullptr;  // Async command watcher (PRD Fix 1)
     QFuture<void> cmd_future_;                      // Async command future
+    SettingsDialog* settings_dlg_ = nullptr;         // Cached settings dialog (no DPAPI lag)
 
     // FIX B6: Graceful shutdown flag — ALL background threads must check
     // this before accessing `this` or any member pointers.

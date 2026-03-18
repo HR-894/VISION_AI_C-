@@ -30,6 +30,17 @@ namespace vision {
 // ═══════════════════ PIMPL Implementation ═══════════════════
 
 struct UIAutomation::Impl {
+    struct ComScope {
+        HRESULT hr;
+        ComScope() { hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED); }
+        ~ComScope() {
+            if (hr == S_OK || hr == S_FALSE) {
+                CoUninitialize();
+            }
+        }
+    };
+    
+    ComScope com_scope;
     IUIAutomation* automation = nullptr;
     bool initialized = false;
 

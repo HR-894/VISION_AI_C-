@@ -36,10 +36,9 @@ using json = nlohmann::json;
 
 namespace vision {
 
-// File-local UI Automation instance (lazy — COM init happens once)
-static UIAutomation& getUIAuto() {
-    static UIAutomation instance;
-    return instance;
+// File-local UI Automation instance (instantiated per-call for thread safety)
+static UIAutomation getUIAuto() {
+    return UIAutomation(); // Guaranteed copy elision creates a fresh ComScope per thread
 }
 
 ActionExecutor::ActionExecutor(VisionAI& app) : app_(app) {

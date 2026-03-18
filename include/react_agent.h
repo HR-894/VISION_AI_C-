@@ -14,6 +14,7 @@
 #include <atomic>
 #include <algorithm>
 #include <functional>
+#include <mutex>
 #include <nlohmann/json.hpp>
 
 namespace vision {
@@ -59,6 +60,7 @@ private:
     int max_steps_ = 10;
     std::atomic<bool> running_{false};
     StepCallback step_callback_;  // Req 3: UI status hook
+    mutable std::mutex state_mutex_; // PRD Fix 2: Thread safety
 
     // ── Core loop steps ──────────────────────────────────────────
     nlohmann::json observe();

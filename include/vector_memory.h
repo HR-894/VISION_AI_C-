@@ -26,7 +26,6 @@ namespace vision {
 
 // ═══════════════════ Data Types ══════════════════════════════════════
 
-static constexpr int kEmbeddingDim = 768;   // nomic-embed-text / MiniLM
 static constexpr int kMaxMemoryEntries = 10000;
 
 struct MemoryEntry {
@@ -124,14 +123,13 @@ private:
     int count_ = 0;
     mutable std::mutex mutex_;
 
-    void allocateMatrix();
+    int dim_ = 0;
+    int padded_dim_ = 0;
+    void allocateMatrix(int dim);
 
     /// Get pointer to row i (aligned)
-    float* row(int i) { return matrix_.get() + i * kPaddedDim; }
-    const float* row(int i) const { return matrix_.get() + i * kPaddedDim; }
-
-    // Pad embedding dim to multiple of 8 for AVX2
-    static constexpr int kPaddedDim = ((kEmbeddingDim + 7) / 8) * 8;  // 768 → 768
+    float* row(int i) { return matrix_.get() + i * padded_dim_; }
+    const float* row(int i) const { return matrix_.get() + i * padded_dim_; }
 
     // ── Metadata ───────────────────────────────────────────────────
     std::vector<MemoryEntry> entries_;
@@ -157,7 +155,7 @@ private:
     struct FileHeader {
         char magic[8] = {'V','M','E','M','0','0','0','1'};  // "VMEM0001"
         int32_t count = 0;
-        int32_t dim = kEmbeddingDim;
+        int32_t dim = 0;
         int64_t metadata_offset = 0;  // Byte offset to JSON metadata
     };
 };
