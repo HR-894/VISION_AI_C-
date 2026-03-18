@@ -143,7 +143,8 @@ bool LocalBackend::isReady() const {
 // ═══════════════════ Inference ═════════════════════════════════════
 
 std::string LocalBackend::generate(const std::string& prompt,
-                                   const std::vector<Message>& history) {
+                                   const std::vector<Message>& history,
+                                   StreamCallback stream_cb) {
 #ifdef VISION_HAS_LLM
     std::lock_guard<std::recursive_mutex> lock(llm_mutex_);
     if (!loaded_ && !initialize()) {

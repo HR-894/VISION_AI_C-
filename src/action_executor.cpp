@@ -291,7 +291,7 @@ std::optional<ScreenPoint> ActionExecutor::findElementOCR(const std::string& tex
 std::pair<bool, std::string> ActionExecutor::findAndClick(const std::string& element,
                                                            int retry) {
     // ── Strategy 1: Try UI Automation first (instant, precise) ────────
-    auto& uia = getUIAuto();
+    auto uia = getUIAuto();
     if (uia.isAvailable()) {
         auto uia_elem = uia.findElement(element);
         if (uia_elem) {
@@ -560,7 +560,7 @@ std::pair<bool, std::string> ActionExecutor::actionTaskComplete(const json& para
 
 std::pair<bool, std::string> ActionExecutor::actionGetUITree(const json& params) {
     int depth = params.value("depth", 3);
-    auto& uia = getUIAuto();
+    auto uia = getUIAuto();
     if (!uia.isAvailable()) {
         return {false, "UI Automation not available (COM init failed)"};
     }

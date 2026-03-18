@@ -58,6 +58,8 @@
 
 namespace vision {
 
+class SettingsDialog;
+
 class VisionAI : public QMainWindow {
     Q_OBJECT
 
@@ -171,6 +173,7 @@ private:
     // ── UI Widgets ───────────────────────────────────────────────
     ChatWidget* chat_widget_ = nullptr;
     QLineEdit* input_field_ = nullptr;
+    QLabel* status_label_{nullptr};
     QLabel* raw_status_label_{nullptr};
     QLabel* memory_label_{nullptr};
     QComboBox* preset_selector_{nullptr}; // Req 1: Dropdown for AI Persona presets

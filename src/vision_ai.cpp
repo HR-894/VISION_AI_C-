@@ -28,6 +28,7 @@
 #include <shlobj.h>
 #include <thread>
 #include <chrono>
+#include <fstream>
 #include <sstream>
 #include <algorithm>
 #include <filesystem>

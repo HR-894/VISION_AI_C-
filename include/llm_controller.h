@@ -60,6 +60,8 @@ public:
     /// Check if active backend is loaded/ready
     bool isModelLoaded() const;
 
+    using StreamCallback = std::function<void(const std::string&)>;
+
     /// Single ReAct iteration: given task, observation, history    // ── ReAct orchestration ──────────────────────────────────────
     std::optional<nlohmann::json> reactStep(
         const std::string& task,
@@ -71,8 +73,6 @@ public:
     std::optional<nlohmann::json> parseAmbiguousCommand(
         const std::string& command,
         const std::string& context = "");
-
-    using StreamCallback = std::function<void(const std::string&)>;
 
     /// Generate raw response for the ReAct prompt
     std::string generateReactResponse(const std::string& prompt, StreamCallback stream_cb = nullptr);
@@ -91,6 +91,9 @@ public:
 
     /// Set thread count (for local backend)
     void setThreadCount(int count);
+
+    /// Generate a single text response (main inference entry point)
+    std::string generateResponse(const std::string& prompt, StreamCallback stream_cb = nullptr);
 
     // ── Emergency Stop ──────────────────────────────────────────
     /// Cancel any ongoing generation immediately
@@ -183,7 +186,6 @@ private:
     std::shared_future<std::string> async_future_;  // Track outstanding async work
 
     // ── Internal helpers (shared across backends) ────────────────
-    std::string generateResponse(const std::string& prompt, StreamCallback stream_cb = nullptr);
     nlohmann::json parseJsonStrict(const std::string& text);
     nlohmann::json validateAndFill(nlohmann::json parsed);
     std::string formatHistory(const std::vector<nlohmann::json>& history);
