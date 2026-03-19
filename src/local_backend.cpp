@@ -523,24 +523,29 @@ std::string LocalBackend::findModelPath() const {
 
 std::string LocalBackend::buildFullPrompt(const std::string& prompt,
                                           const std::vector<Message>& history) const {
-    // ── Context Synchronization Logic ──
-    // When switching from Cloud → Local, the LocalBackend receives the full
-    // conversation history and reconstructs a plain-text prompt from it.
-    // This ensures continuity across backend switches.
+    // ── ChatML Prompt Templating ──
+    // Modern instruct models (Qwen, Llama-3, Phi-3) rely on explicit
+    // <|im_start|>role and <|im_end|> markers to know when a turn ends.
+    // Without these, the model never emits EOS and generates until context
+    // overflow → KV cache crash.
 
     if (history.empty()) {
-        return prompt;  // No history — just the raw prompt
+        // Wrap even bare prompts in ChatML so the model sees the boundary
+        std::ostringstream ss;
+        ss << "<|im_start|>user\n" << prompt << "<|im_end|>\n";
+        ss << "<|im_start|>assistant\n";
+        return ss.str();
     }
 
     std::ostringstream ss;
 
     for (const auto& msg : history) {
         if (msg.role == "system") {
-            ss << msg.content << "\n\n";
+            ss << "<|im_start|>system\n" << msg.content << "<|im_end|>\n";
         } else if (msg.role == "user") {
-            ss << "User: " << msg.content << "\n";
+            ss << "<|im_start|>user\n" << msg.content << "<|im_end|>\n";
         } else if (msg.role == "assistant") {
-            ss << "Assistant: " << msg.content << "\n";
+            ss << "<|im_start|>assistant\n" << msg.content << "<|im_end|>\n";
         }
     }
 
@@ -551,10 +556,11 @@ std::string LocalBackend::buildFullPrompt(const std::string& prompt,
         already_in_history = true;
     }
     if (!already_in_history) {
-        ss << "User: " << prompt << "\n";
+        ss << "<|im_start|>user\n" << prompt << "<|im_end|>\n";
     }
 
-    ss << "Assistant: ";  // Prompt the model to generate
+    // Open the assistant turn — model generates until it emits <|im_end|>
+    ss << "<|im_start|>assistant\n";
     return ss.str();
 }
 

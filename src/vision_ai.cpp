@@ -1487,8 +1487,20 @@ void VisionAI::startRecording() {
         "background: #2a2a2a; border: 2px solid #FF4444; border-radius: 8px; "
         "padding: 8px 14px; font-size: 14px; color: white;");
     input_field_->setPlaceholderText("🎤 Listening... Press Ctrl+Alt+Space to stop");
+    input_field_->clear();
     if (tray_icon_) tray_icon_->setToolTip("VISION AI — 🎤 Listening...");
     updateStatus("🎤 Listening... (Ctrl+Alt+Space to stop)", "#FF4444");
+
+    // ── Start Live Streaming Worker ──
+    // The WhisperEngine polls AudioCapture every 800ms and fires the
+    // partial callback on a background thread. We use QMetaObject to
+    // safely update the UI input field from the worker thread.
+    whisper_engine_->startListening(audio_capture_.get(),
+        [this](const std::string& partial) {
+            QMetaObject::invokeMethod(this, [this, partial]() {
+                input_field_->setText(QString::fromStdString(partial));
+            }, Qt::QueuedConnection);
+        });
 #endif
 }
 
@@ -1496,6 +1508,9 @@ void VisionAI::stopAndProcess() {
 #ifdef VISION_HAS_WHISPER
     if (!recording_) return;
     recording_ = false;
+
+    // ── Stop the live streaming worker first ──
+    whisper_engine_->stopListening();
     audio_capture_->stopRecording();
     
     // Reset visual indicators
@@ -1505,9 +1520,9 @@ void VisionAI::stopAndProcess() {
         "padding: 8px 14px; font-size: 14px; color: white;");
     input_field_->setPlaceholderText("Type a command... (Enter to send, Ctrl+Alt+Space for voice)");
     if (tray_icon_) tray_icon_->setToolTip("VISION AI — Ready");
-    updateStatus("🧠 Processing voice...", "#FFD700");
+    updateStatus("🧠 Processing voice (final pass)...", "#FFD700");
     
-    // Store thread (not detached!) for safe shutdown
+    // Run final high-accuracy transcription on a background thread
     if (audio_thread_.joinable()) audio_thread_.join();
     audio_thread_ = std::thread([this]() { processAudio(); });
 #endif
@@ -1517,13 +1532,18 @@ void VisionAI::processAudio() {
 #ifdef VISION_HAS_WHISPER
     auto audio_data = audio_capture_->getAudioData();
     if (audio_data.empty()) {
-        updateStatus("No audio captured", "");
+        QMetaObject::invokeMethod(this, [this]() {
+            updateStatus("No audio captured", "");
+        }, Qt::QueuedConnection);
         return;
     }
     
+    // Final high-accuracy transcription pass over the complete buffer
     std::string text = whisper_engine_->transcribe(audio_data);
     if (text.empty()) {
-        updateStatus("No speech detected", "");
+        QMetaObject::invokeMethod(this, [this]() {
+            updateStatus("No speech detected", "");
+        }, Qt::QueuedConnection);
         return;
     }
     
@@ -1533,7 +1553,9 @@ void VisionAI::processAudio() {
         input_field_->setText(QString::fromStdString(text));
         onSendCommand();
     }, Qt::QueuedConnection);
-    updateStatus("Ready", "");
+    QMetaObject::invokeMethod(this, [this]() {
+        updateStatus("Ready", "");
+    }, Qt::QueuedConnection);
 #endif
 }
 

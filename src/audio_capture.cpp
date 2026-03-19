@@ -1,9 +1,11 @@
 /**
  * @file audio_capture.cpp
- * @brief PortAudio microphone recording
+ * @brief PortAudio microphone recording with VAD and sliding window
  */
 
 #include "audio_capture.h"
+#include <cmath>
+#include <algorithm>
 
 #ifdef VISION_HAS_AUDIO
 #include <portaudio.h>
@@ -74,7 +76,9 @@ bool AudioCapture::startRecording() {
     }
     
     recording_ = true;
-    LOG_INFO("Audio recording started ({}Hz, {} ch)", sample_rate_, channels_);
+    voice_active_ = false;
+    LOG_INFO("Audio recording started ({}Hz, {} ch, VAD threshold: {})",
+             sample_rate_, channels_, vad_threshold_);
     return true;
 #else
     return false;
@@ -85,6 +89,7 @@ void AudioCapture::stopRecording() {
 #ifdef VISION_HAS_AUDIO
     if (!recording_.load()) return;
     recording_ = false;
+    voice_active_ = false;
     
     if (stream_) {
         Pa_StopStream(stream_);
@@ -102,11 +107,29 @@ std::vector<float> AudioCapture::getAudioData() {
     return buffer_;
 }
 
+std::vector<float> AudioCapture::getLatestAudio(int duration_ms) {
+    std::lock_guard lock(buffer_mutex_);
+    int samples_needed = (sample_rate_ * duration_ms) / 1000;
+    if (buffer_.empty() || samples_needed <= 0) return {};
+
+    int available = static_cast<int>(buffer_.size());
+    int to_copy = std::min(samples_needed, available);
+    return std::vector<float>(buffer_.end() - to_copy, buffer_.end());
+}
+
+size_t AudioCapture::getSampleCount() const {
+    // Not perfectly thread-safe for size, but good enough for polling
+    return buffer_.size();
+}
+
 void AudioCapture::clearBuffer() {
     std::lock_guard lock(buffer_mutex_);
     buffer_.clear();
+    voice_active_ = false;
+    current_rms_ = 0.0f;
 }
 
+#ifdef VISION_HAS_AUDIO
 int AudioCapture::paCallback(const void* input, void* /*output*/,
                                unsigned long frame_count,
                                const PaStreamCallbackTimeInfo* /*time_info*/,
@@ -116,11 +139,22 @@ int AudioCapture::paCallback(const void* input, void* /*output*/,
     const float* in = static_cast<const float*>(input);
     
     if (in && self->recording_.load()) {
+        // ── VAD: Compute RMS energy of this frame ──
+        float sum_sq = 0.0f;
+        for (unsigned long i = 0; i < frame_count * self->channels_; i++) {
+            sum_sq += in[i] * in[i];
+        }
+        float rms = std::sqrt(sum_sq / (float)(frame_count * self->channels_));
+        self->current_rms_.store(rms);
+        self->voice_active_.store(rms > self->vad_threshold_);
+
+        // Always append to buffer (we need the full recording for final pass)
         std::lock_guard lock(self->buffer_mutex_);
         self->buffer_.insert(self->buffer_.end(), in, in + frame_count * self->channels_);
     }
     
     return self->recording_.load() ? 0 : 1; // paContinue : paComplete
 }
+#endif
 
 } // namespace vision

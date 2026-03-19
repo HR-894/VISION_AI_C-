@@ -1,21 +1,27 @@
 #pragma once
 /**
  * @file whisper_engine.h
- * @brief Speech-to-text using whisper.cpp
+ * @brief Speech-to-text using whisper.cpp — streaming background worker
  * 
- * Loads a whisper model and transcribes audio buffers to text.
- * Includes voice text cleanup for common recognition artifacts.
+ * Loads a whisper model and provides both batch transcription and
+ * a continuous background worker that polls AudioCapture for live
+ * partial transcriptions. Emits Qt signals for real-time UI updates.
  */
 
 #include <string>
 #include <vector>
 #include <memory>
+#include <thread>
+#include <atomic>
+#include <functional>
 
 #ifdef VISION_HAS_WHISPER
 struct whisper_context;
 #endif
 
 namespace vision {
+
+class AudioCapture;  // Forward declaration
 
 class WhisperEngine {
 public:
@@ -42,14 +48,33 @@ public:
     /// Check if whisper is available (compiled in)
     static bool isAvailable();
 
-    /// Transcribe audio samples (float32, 16kHz mono) to text
+    /// Transcribe audio samples (float32, 16kHz mono) to text — batch/blocking
     std::string transcribe(const std::vector<float>& audio);
+
+    /// Fast partial transcribe — lower accuracy, faster speed for live preview
+    std::string transcribeFast(const std::vector<float>& audio);
 
     /// Clean up common voice recognition artifacts
     static std::string cleanVoiceText(const std::string& text);
 
     /// Get model info string
     std::string getModelInfo() const;
+
+    // ── Live Streaming API ───────────────────────────────────────
+
+    /// Callback type for partial transcription results
+    using PartialCallback = std::function<void(const std::string& partial_text)>;
+
+    /// Start the background polling worker — polls audio_capture for chunks
+    /// @param audio_capture  Pointer to the active AudioCapture instance
+    /// @param on_partial     Callback invoked on the worker thread with partial text
+    void startListening(AudioCapture* audio_capture, PartialCallback on_partial);
+
+    /// Stop the background polling worker
+    void stopListening();
+
+    /// Check if the background worker is running
+    bool isListening() const { return listening_.load(); }
 
 private:
 #ifdef VISION_HAS_WHISPER
@@ -59,6 +84,14 @@ private:
     std::string model_path_;
     bool loaded_ = false;
 
+    // ── Background worker state ──────────────────────────────────
+    std::atomic<bool> listening_{false};
+    std::thread worker_thread_;
+
+    /// Worker loop: polls AudioCapture, runs fast whisper, fires callback
+    void workerLoop(AudioCapture* audio_capture, PartialCallback on_partial);
+
+    /// Find model on disk
     std::string findModelPath() const;
 };
 
