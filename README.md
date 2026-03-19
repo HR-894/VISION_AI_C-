@@ -97,9 +97,9 @@ Two AI backends, seamlessly switchable at runtime:
 
 Press **`Ctrl+Alt+Space`** and speak. VISION AI converts speech to text using [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — all on-device, no internet needed.
 
-- Real-time transcription
-- Supports multiple languages
-- Works as both voice input for commands AND dictation
+- **True Live Streaming (Gboard-style)** — Real-time partial transcriptions update instantly as you speak.
+- **Lock-Free Audio Pipeline** — Powered by a high-performance Single-Producer/Single-Consumer (SPSC) ring buffer, ensuring zero audio drops even under heavy LLM/UI load.
+- **Auto Voice Activity Detection (VAD)** — Automatically detects speech onset and ends using RMS energy heuristics.
 
 ---
 
@@ -142,6 +142,8 @@ User Input
 ```
 
 Simple known commands execute **instantly** (~0ms). Complex or conversational inputs go to the AI agent. Chat replies complete in **1 step** — no unnecessary ReAct loop iterations.
+
+> **💡 Stability Note:** VISION AI leverages strict **ChatML context bounding** (`<|im_start|>` / `<|im_end|>`) compatible with Llama-3 and Qwen. This definitively prevents the "infinite context generation" memory-leak crashes common in local LLM wrappers.
 
 ---
 
@@ -274,12 +276,13 @@ cmake --build build --config Release --parallel
 ## 🏗️ Architecture
 
 ```
-VISION AI v3.0
+VISION AI v3.1 (V2 Architecture)
 ├── Language          C++20 (MSVC /std:c++20)
 ├── UI Framework      Qt 6 (Widgets, Core, Dark Theme)
 ├── LLM Engine        llama.cpp (GGUF, CUDA/Vulkan/CPU)
 ├── Cloud Engine      Groq REST API (libcurl)
 ├── Speech-to-Text    whisper.cpp (ggml models)
+├── Audio Pipeline    Lock-Free SPSC Ring Buffer + VoiceManager
 ├── OCR               Tesseract 5 + OpenCV 4
 ├── Screen Capture    DXGI Desktop Duplication API
 ├── Audio Capture     PortAudio 19
@@ -297,39 +300,15 @@ VISION AI v3.0
 <details>
 <summary>Click to expand full module list</summary>
 
-| Module | File | Role |
+| Module | Subdirectory | Role |
 |---|---|---|
-| **Core App** | `vision_ai.cpp` | Main orchestrator, Qt UI, command pipeline, system tray |
-| **Chat Widget** | `chat_widget.cpp` | Discord-style chat UI with message bubbles |
-| **LLM Controller** | `llm_controller.cpp` | Dual-inference orchestrator, backend switching, async generation, caching |
-| **Local Backend** | `local_backend.cpp` | llama.cpp GGUF: loading, tokenization, KV cache, sampling, embeddings |
-| **Cloud Backend** | `cloud_backend.cpp` | Groq REST API: JSON request/response, cancellation, streaming |
-| **Instruction Translator** | `instruction_translator.cpp` | Model-family-aware prompt optimization on backend switch |
-| **ReAct Agent** | `react_agent.cpp` | Reason-Act loop: observe → think → act, multi-step execution |
-| **Action Executor** | `action_executor.cpp` | Translates AI decisions into OS actions (chat, open, type, click...) |
-| **Command Router** | `command_router.cpp` | Intent classification & command dispatch |
-| **Fast Complex Handler** | `fast_complex_handler.cpp` | Compound commands: "open X and search Y" |
-| **Template Matcher** | `smart_template_matcher.cpp` | Regex-based pattern matching for known commands |
-| **Confidence Scorer** | `confidence_scorer.cpp` | Deterministic safety scoring & dangerous command blocking |
-| **Whisper Engine** | `whisper_engine.cpp` | Real-time speech-to-text pipeline |
-| **Audio Capture** | `audio_capture.cpp` | PortAudio microphone stream management |
-| **Device Profiler** | `device_profiler.cpp` | Hardware detection & performance tuning |
-| **UI Automation** | `ui_automation.cpp` | Microsoft UIA accessibility tree traversal |
-| **Screen Observer** | `screen_observer.cpp` | DXGI screen capture + pHash change detection |
-| **Window Manager** | `window_manager.cpp` | Window enumeration, focus, minimize, maximize, input injection |
-| **System Commands** | `system_commands.cpp` | Volume, brightness, app launching, power management |
-| **Safety Guard** | `safety_guard.cpp` | File whitelisting & action validation |
-| **Agent Memory** | `agent_memory.cpp` | DPAPI-encrypted semantic memory store |
-| **Vector Memory** | `vector_memory.cpp` | Cosine similarity search, persistent binary storage |
-| **User Behavior** | `user_behavior.cpp` | Behavioral pattern learning & prediction |
-| **Context Manager** | `context_manager.cpp` | Conversation history & active app tracking |
-| **Config Manager** | `config_manager.cpp` | Persistent JSON settings |
-| **File Manager** | `file_manager.cpp` | Safe file operations with sandboxing |
-| **Settings Dialog** | `settings_dialog.cpp` | API key input, engine selection, DPAPI encryption |
-| **GPU Setup Wizard** | `gpu_setup_wizard.cpp` | First-run GPU detection dialog |
-| **Model Downloader** | `model_downloader_wizard.cpp` | Auto-download models with progress bar |
-| **Web Search** | `web_search.cpp` | Minimal web search integration |
-| **Main** | `main.cpp` | Entry point, dark theme, COM init, wizard flow |
+| **Core Options** | `src/core/` | Configuration, Safety Guard, Doctors, Telemetry |
+| **Agent / LLM** | `src/ai/` | ReAct loop, Cloud/Local backends, Prompt Translator |
+| **Voice Streaming** | `src/voice/` | `VoiceManager` orchestrator, `AudioCapture` SPSC buffer, `WhisperEngine` worker |
+| **User Interface** | `src/ui/` | `VisionAI` main window, chat bubbles, settings dialog |
+| **Automation** | `src/automation/` | OS input injection, Windows scraping (UIA), Window geometry |
+| **Screen / Vision** | `src/vision/` | Perceptual hashing (pHash) screen delta detection + Tesseract OCR |
+| **Vector Memory** | `src/memory/` | Fast C++ Cosine Similarity memory indexing and tracking |
 
 </details>
 
