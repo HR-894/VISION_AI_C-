@@ -190,8 +190,7 @@ VisionAI::~VisionAI() {
     }
 
 #ifdef VISION_HAS_WHISPER
-    if (audio_capture_) audio_capture_->stopRecording();  // Stop mic stream
-    if (audio_thread_.joinable())      audio_thread_.join();
+    if (voice_manager_) voice_manager_->stopListening();
 #endif
 
     // Stop Screen Observer (before destroying OCR engine)
@@ -213,8 +212,7 @@ VisionAI::~VisionAI() {
     llm_controller_.reset();  // Shuts down backends, frees VRAM
 #endif
 #ifdef VISION_HAS_WHISPER
-    audio_capture_.reset();
-    whisper_engine_.reset();
+    voice_manager_.reset();
 #endif
     screen_observer_.reset();  // After OCR shutdown
 
@@ -476,19 +474,35 @@ void VisionAI::loadModels() {
     auto rec = profiler_.getRecommendedConfig();
     std::string whisper_model = rec.value("whisper_model", "base");
 
-    // PRD Fix 2: Read user-configured whisper settings from config
+    // Retrieve user-configured model path and size
     std::string whisper_size = config_.getNested<std::string>("whisper.model_size", whisper_model);
-    whisper_engine_ = std::make_unique<WhisperEngine>(whisper_size);
-
     std::string saved_whisper_path = config_.getNested<std::string>("whisper.model_path", "");
-    if (!saved_whisper_path.empty()) {
-        whisper_engine_->setModelPath(saved_whisper_path);
-    }
 
-    audio_capture_ = std::make_unique<AudioCapture>();
+    voice_manager_ = std::make_unique<voice::VoiceManager>(this);
     
-    if (whisper_engine_->loadModel()) {
-        LOG_INFO("Whisper loaded: {}", whisper_engine_->getModelInfo());
+    // Wire up VoiceManager signals to the UI
+    connect(voice_manager_.get(), &voice::VoiceManager::partialText, this, [this](const QString& text) {
+        input_field_->setText(text);
+    });
+    
+    connect(voice_manager_.get(), &voice::VoiceManager::finalText, this, [this](const QString& text) {
+        input_field_->setText(text);
+        if (!text.isEmpty()) {
+            onSendCommand();
+        }
+        updateStatus("Ready", "");
+    });
+    
+    connect(voice_manager_.get(), &voice::VoiceManager::speechDetected, this, [this]() {
+        updateStatus("🎤 Speech detected...", "#39FF14");
+    });
+    
+    connect(voice_manager_.get(), &voice::VoiceManager::error, this, [this](const QString& err) {
+        updateStatus("Voice Error: " + err.toStdString(), "#FF4444");
+    });
+    
+    if (voice_manager_->initialize(saved_whisper_path)) {
+        LOG_INFO("VoiceManager initialized with model: {}", whisper_size);
     }
 #endif
     
@@ -1445,7 +1459,7 @@ bool VisionAI::nativeEvent(const QByteArray& eventType, void* message, qintptr* 
     if (msg->message == WM_HOTKEY) {
         if (msg->wParam == (WPARAM)hotkey_id_) {
 #ifdef VISION_HAS_WHISPER
-            if (recording_) stopAndProcess();
+            if (voice_manager_ && voice_manager_->isListening()) stopAndProcess();
             else startRecording();
 #endif
             *result = 0;
@@ -1477,9 +1491,8 @@ void VisionAI::onTrayActivated(QSystemTrayIcon::ActivationReason reason) {
 
 void VisionAI::startRecording() {
 #ifdef VISION_HAS_WHISPER
-    if (!audio_capture_ || !whisper_engine_) return;
-    recording_ = true;
-    audio_capture_->startRecording();
+    if (!voice_manager_) return;
+    voice_manager_->startListening();
     
     // Visual feedback: change title, pulse input red, update tray tooltip
     setWindowTitle("🎤 LISTENING... — VISION AI");
@@ -1490,30 +1503,14 @@ void VisionAI::startRecording() {
     input_field_->clear();
     if (tray_icon_) tray_icon_->setToolTip("VISION AI — 🎤 Listening...");
     updateStatus("🎤 Listening... (Ctrl+Alt+Space to stop)", "#FF4444");
-
-    // ── Start Live Streaming Worker ──
-    // The WhisperEngine polls AudioCapture every 800ms and fires the
-    // partial callback on a background thread. We use QMetaObject to
-    // safely update the UI input field from the worker thread.
-    whisper_engine_->startListening(audio_capture_.get(),
-        [this](const std::string& partial) {
-            QMetaObject::invokeMethod(this, [this, partial]() {
-                input_field_->setText(QString::fromStdString(partial));
-            }, Qt::QueuedConnection);
-        });
 #endif
 }
 
 void VisionAI::stopAndProcess() {
 #ifdef VISION_HAS_WHISPER
-    if (!recording_) return;
-    recording_ = false;
-
-    // ── Stop the live streaming worker first ──
-    whisper_engine_->stopListening();
-    audio_capture_->stopRecording();
+    if (!voice_manager_) return;
     
-    // Reset visual indicators
+    // Visual reset
     setWindowTitle("VISION AI");
     input_field_->setStyleSheet(
         "background: #2a2a2a; border: 1px solid #555; border-radius: 8px; "
@@ -1521,42 +1518,14 @@ void VisionAI::stopAndProcess() {
     input_field_->setPlaceholderText("Type a command... (Enter to send, Ctrl+Alt+Space for voice)");
     if (tray_icon_) tray_icon_->setToolTip("VISION AI — Ready");
     updateStatus("🧠 Processing voice (final pass)...", "#FFD700");
-    
-    // Run final high-accuracy transcription on a background thread
-    if (audio_thread_.joinable()) audio_thread_.join();
-    audio_thread_ = std::thread([this]() { processAudio(); });
+
+    // The VoiceManager orchestrates stopping the worker and triggering the final pass async
+    voice_manager_->stopListening();
 #endif
 }
 
 void VisionAI::processAudio() {
-#ifdef VISION_HAS_WHISPER
-    auto audio_data = audio_capture_->getAudioData();
-    if (audio_data.empty()) {
-        QMetaObject::invokeMethod(this, [this]() {
-            updateStatus("No audio captured", "");
-        }, Qt::QueuedConnection);
-        return;
-    }
-    
-    // Final high-accuracy transcription pass over the complete buffer
-    std::string text = whisper_engine_->transcribe(audio_data);
-    if (text.empty()) {
-        QMetaObject::invokeMethod(this, [this]() {
-            updateStatus("No speech detected", "");
-        }, Qt::QueuedConnection);
-        return;
-    }
-    
-    // Route voice text through the full command pipeline (same as typed)
-    addMessage("You (voice)", text);
-    QMetaObject::invokeMethod(this, [this, text]() {
-        input_field_->setText(QString::fromStdString(text));
-        onSendCommand();
-    }, Qt::QueuedConnection);
-    QMetaObject::invokeMethod(this, [this]() {
-        updateStatus("Ready", "");
-    }, Qt::QueuedConnection);
-#endif
+    // Deprecated: VoiceManager handles this organically via Qt signals
 }
 
 // ═══════════════════ Slots ═══════════════════

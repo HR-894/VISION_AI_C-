@@ -46,8 +46,7 @@
 #include "confidence_scorer.h"
 
 #ifdef VISION_HAS_WHISPER
-#include "whisper_engine.h"
-#include "audio_capture.h"
+#include "voice/VoiceManager.h"
 #endif
 
 #ifdef VISION_HAS_LLM
@@ -88,8 +87,7 @@ public:
     ActionExecutor& executor() { return *action_executor_; }
 #endif
 #ifdef VISION_HAS_WHISPER
-    WhisperEngine& whisper() { return *whisper_engine_; }
-    AudioCapture& audio() { return *audio_capture_; }
+    voice::VoiceManager& voice() { return *voice_manager_; }
 #endif
 
     // ── Chat UI ──────────────────────────────────────────────────
@@ -154,10 +152,7 @@ private:
     std::unique_ptr<ActionExecutor> action_executor_;
 #endif
 #ifdef VISION_HAS_WHISPER
-    std::unique_ptr<WhisperEngine> whisper_engine_;
-    std::unique_ptr<AudioCapture> audio_capture_;
-    std::atomic<bool> recording_{false};
-    std::thread audio_thread_;  // Stored for safe shutdown (not detached)
+    std::unique_ptr<voice::VoiceManager> voice_manager_;
 #endif
 
     // Screen Awareness (Lazy Observer)

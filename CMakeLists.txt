@@ -166,80 +166,88 @@ endif()
 # Source files
 # ============================================================
 set(VISION_HEADERS
-    include/config_manager.h
-    include/device_profiler.h
-    include/safety_guard.h
-    include/window_manager.h
-    include/system_commands.h
-    include/file_manager.h
-    include/smart_template_matcher.h
-    include/command_router.h
-    include/fast_complex_handler.h
-    include/context_manager.h
-    include/agent_memory.h
-    include/user_behavior.h
-    include/web_search.h
-    include/gpu_setup_wizard.h
-    include/model_downloader_wizard.h
-    include/ui_automation.h
-    include/chat_widget.h
-    include/screen_observer.h
-    include/vector_memory.h
-    include/confidence_scorer.h
-    include/settings_dialog.h
-    include/vision_ai.h
+    include/core/config_manager.h
+    include/automation/device_profiler.h
+    include/core/safety_guard.h
+    include/automation/window_manager.h
+    include/automation/system_commands.h
+    include/automation/file_manager.h
+    include/core/smart_template_matcher.h
+    include/ai/command_router.h
+    include/ai/fast_complex_handler.h
+    include/memory/context_manager.h
+    include/memory/agent_memory.h
+    include/core/user_behavior.h
+    include/core/web_search.h
+    include/automation/gpu_setup_wizard.h
+    include/automation/model_downloader_wizard.h
+    include/automation/ui_automation.h
+    include/ui/chat_widget.h
+    include/vision/screen_observer.h
+    include/memory/vector_memory.h
+    include/core/confidence_scorer.h
+    include/ui/settings_dialog.h
+    include/ui/vision_ai.h
+    include/core/doctor.h
 )
 
 set(VISION_SOURCES
     src/main.cpp
-    src/config_manager.cpp
-    src/device_profiler.cpp
-    src/safety_guard.cpp
-    src/window_manager.cpp
-    src/system_commands.cpp
-    src/file_manager.cpp
-    src/smart_template_matcher.cpp
-    src/command_router.cpp
-    src/fast_complex_handler.cpp
-    src/context_manager.cpp
-    src/agent_memory.cpp
-    src/user_behavior.cpp
-    src/web_search.cpp
-    src/gpu_setup_wizard.cpp
-    src/model_downloader_wizard.cpp
-    src/ui_automation.cpp
-    src/vision_ai.cpp
-    src/chat_widget.cpp
-    src/screen_observer.cpp
-    src/vector_memory.cpp
-    src/confidence_scorer.cpp
-    src/settings_dialog.cpp
+    src/core/config_manager.cpp
+    src/automation/device_profiler.cpp
+    src/core/safety_guard.cpp
+    src/automation/window_manager.cpp
+    src/automation/system_commands.cpp
+    src/automation/file_manager.cpp
+    src/core/smart_template_matcher.cpp
+    src/ai/command_router.cpp
+    src/ai/fast_complex_handler.cpp
+    src/memory/context_manager.cpp
+    src/memory/agent_memory.cpp
+    src/core/user_behavior.cpp
+    src/core/web_search.cpp
+    src/automation/gpu_setup_wizard.cpp
+    src/automation/model_downloader_wizard.cpp
+    src/automation/ui_automation.cpp
+    src/ui/vision_ai.cpp
+    src/ui/chat_widget.cpp
+    src/vision/screen_observer.cpp
+    src/memory/vector_memory.cpp
+    src/core/confidence_scorer.cpp
+    src/ui/settings_dialog.cpp
+    src/core/doctor.cpp
 )
 
-# Conditional AI sources
 if(VISION_ENABLE_WHISPER)
-    list(APPEND VISION_HEADERS include/whisper_engine.h include/audio_capture.h)
-    list(APPEND VISION_SOURCES src/whisper_engine.cpp src/audio_capture.cpp)
+    list(APPEND VISION_HEADERS
+        include/voice/WhisperEngine.h
+        include/voice/AudioCapture.h
+        include/voice/VoiceManager.h
+    )
+    list(APPEND VISION_SOURCES
+        src/voice/WhisperEngine.cpp
+        src/voice/AudioCapture.cpp
+        src/voice/VoiceManager.cpp
+    )
 endif()
 
 if(VISION_ENABLE_LLM)
     list(APPEND VISION_HEADERS
-        include/ai_backend.h
-        include/local_backend.h
-        include/cloud_backend.h
-        include/instruction_translator.h
-        include/llm_controller.h
-        include/react_agent.h
-        include/action_executor.h
+        include/ai/ai_backend.h
+        include/ai/local_backend.h
+        include/ai/cloud_backend.h
+        include/ai/instruction_translator.h
+        include/ai/llm_controller.h
+        include/automation/react_agent.h
+        include/automation/action_executor.h
     )
     list(APPEND VISION_SOURCES
-        src/local_backend.cpp
-        src/cloud_backend.cpp
-        src/instruction_translator.cpp
-        src/llm_controller.cpp
-        src/react_agent.cpp
-        src/action_executor.cpp
-        src/doctor.cpp
+        src/ai/local_backend.cpp
+        src/ai/cloud_backend.cpp
+        src/ai/instruction_translator.cpp
+        src/ai/llm_controller.cpp
+        src/automation/react_agent.cpp
+        src/automation/action_executor.cpp
     )
 endif()
 
@@ -255,15 +263,22 @@ qt_add_executable(VISION_AI WIN32 ${VISION_SOURCES} ${VISION_HEADERS})
 # ui_automation.h starts with "ui_" which tricks Qt's AutoUic into
 # looking for a non-existent "automation.ui" form file.
 set_source_files_properties(
-    include/ui_automation.h
-    src/ui_automation.cpp
-    src/action_executor.cpp
-    src/window_manager.cpp
+    include/automation/ui_automation.h
+    src/automation/ui_automation.cpp
+    src/automation/action_executor.cpp
+    src/automation/window_manager.cpp
     PROPERTIES SKIP_AUTOUIC ON
 )
 
 target_include_directories(VISION_AI PRIVATE
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/include/ui
+    ${CMAKE_SOURCE_DIR}/include/ai
+    ${CMAKE_SOURCE_DIR}/include/voice
+    ${CMAKE_SOURCE_DIR}/include/vision
+    ${CMAKE_SOURCE_DIR}/include/automation
+    ${CMAKE_SOURCE_DIR}/include/memory
+    ${CMAKE_SOURCE_DIR}/include/core
 )
 
 # ============================================================
