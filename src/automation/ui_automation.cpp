@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <uiautomation.h>
 #include <comdef.h>
+#include <wrl/client.h>
 #include <sstream>
 
 #ifdef VISION_HAS_SPDLOG
@@ -24,6 +25,7 @@
 #endif
 
 using json = nlohmann::json;
+using Microsoft::WRL::ComPtr;
 
 namespace vision {
 
@@ -41,14 +43,13 @@ struct UIAutomation::Impl {
     };
     
     ComScope com_scope;
-    IUIAutomation* automation = nullptr;
+    ComPtr<IUIAutomation> automation;
     bool initialized = false;
 
     Impl() {
         HRESULT hr = CoCreateInstance(__uuidof(CUIAutomation), nullptr,
                                       CLSCTX_INPROC_SERVER,
-                                      __uuidof(IUIAutomation),
-                                      reinterpret_cast<void**>(&automation));
+                                      IID_PPV_ARGS(&automation));
         if (SUCCEEDED(hr) && automation) {
             initialized = true;
             LOG_INFO("UI Automation COM initialized");
@@ -58,7 +59,7 @@ struct UIAutomation::Impl {
     }
 
     ~Impl() {
-        if (automation) automation->Release();
+        
     }
 
     /// Convert a CONTROLTYPEID to a human-readable string
@@ -188,27 +189,26 @@ struct UIAutomation::Impl {
 
         // Walk children
         if (depth < max_depth) {
-            IUIAutomationTreeWalker* walker = nullptr;
+            ComPtr<IUIAutomationTreeWalker> walker;
             if (SUCCEEDED(automation->get_ControlViewWalker(&walker)) && walker) {
                 json children = json::array();
-                IUIAutomationElement* child = nullptr;
+                ComPtr<IUIAutomationElement> child;
                 if (SUCCEEDED(walker->GetFirstChildElement(elem, &child)) && child) {
                     int child_count = 0;
                     while (child && child_count < 50) {  // Cap children to avoid explosion
-                        json child_node = walkTree(child, depth + 1, max_depth);
+                        json child_node = walkTree(child.Get(), depth + 1, max_depth);
                         if (!child_node.is_null()) {
                             children.push_back(std::move(child_node));
                         }
 
-                        IUIAutomationElement* sibling = nullptr;
-                        HRESULT hr = walker->GetNextSiblingElement(child, &sibling);
-                        child->Release();
+                        ComPtr<IUIAutomationElement> sibling;
+                        HRESULT hr = walker->GetNextSiblingElement(child.Get(), &sibling);
                         child = (SUCCEEDED(hr)) ? sibling : nullptr;
                         child_count++;
                     }
-                    if (child) child->Release();
+                    
                 }
-                walker->Release();
+                
 
                 if (!children.empty()) {
                     node["children"] = std::move(children);
@@ -241,25 +241,25 @@ struct UIAutomation::Impl {
         }
 
         // Recurse children
-        IUIAutomationTreeWalker* walker = nullptr;
+        ComPtr<IUIAutomationTreeWalker> walker;
         if (SUCCEEDED(automation->get_ControlViewWalker(&walker)) && walker) {
-            IUIAutomationElement* child = nullptr;
+            ComPtr<IUIAutomationElement> child;
             if (SUCCEEDED(walker->GetFirstChildElement(root, &child)) && child) {
                 while (child) {
-                    auto found = searchByName(child, name, depth + 1, max_depth);
+                    auto found = searchByName(child.Get(), name, depth + 1, max_depth);
                     if (found) {
-                        child->Release();
-                        walker->Release();
+                        
+                        
                         return found;
                     }
 
-                    IUIAutomationElement* sibling = nullptr;
-                    HRESULT hr = walker->GetNextSiblingElement(child, &sibling);
-                    child->Release();
+                    ComPtr<IUIAutomationElement> sibling;
+                    HRESULT hr = walker->GetNextSiblingElement(child.Get(), &sibling);
+                    
                     child = (SUCCEEDED(hr)) ? sibling : nullptr;
                 }
             }
-            walker->Release();
+            
         }
 
         return std::nullopt;
@@ -296,7 +296,7 @@ json UIAutomation::getAccessibilityTree(int max_depth) {
         if (!window_title.empty() && window_title.back() == '\0') window_title.pop_back();
     }
 
-    IUIAutomationElement* root = nullptr;
+    ComPtr<IUIAutomationElement> root;
     HRESULT hr = impl_->automation->ElementFromHandle(fg, &root);
     if (FAILED(hr) || !root) {
         return {{"error", "Failed to get UIA element from window"}};
@@ -304,9 +304,9 @@ json UIAutomation::getAccessibilityTree(int max_depth) {
 
     json result;
     result["window"] = window_title;
-    result["tree"] = impl_->walkTree(root, 0, max_depth);
+    result["tree"] = impl_->walkTree(root.Get(), 0, max_depth);
 
-    root->Release();
+    
     return result;
 }
 
@@ -316,12 +316,12 @@ std::optional<UIElement> UIAutomation::findElement(const std::string& name) {
     HWND fg = GetForegroundWindow();
     if (!fg) return std::nullopt;
 
-    IUIAutomationElement* root = nullptr;
+    ComPtr<IUIAutomationElement> root;
     HRESULT hr = impl_->automation->ElementFromHandle(fg, &root);
     if (FAILED(hr) || !root) return std::nullopt;
 
-    auto result = impl_->searchByName(root, name, 0, 5);
-    root->Release();
+    auto result = impl_->searchByName(root.Get(), name, 0, 5);
+    
     return result;
 }
 
