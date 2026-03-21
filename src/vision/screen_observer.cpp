@@ -17,6 +17,14 @@
 #include <cstring>
 #include <cmath>
 
+#include <objidl.h>
+#include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
+
+#ifdef TRACY_ENABLE
+#include <tracy/Tracy.hpp>
+#endif
+
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 
@@ -116,6 +124,10 @@ bool ScreenObserver::reinitDXGI() {
 // ═══════════════════ Frame Capture ═══════════════════════════════════
 
 ScreenObserver::CapturedFrame ScreenObserver::captureFrame() {
+#ifdef TRACY_ENABLE
+    ZoneScoped;
+#endif
+
     CapturedFrame frame;
     if (!duplication_) return frame;
 
@@ -210,47 +222,83 @@ ScreenObserver::CapturedFrame ScreenObserver::captureFrame() {
 // ═══════════════════ Perceptual Hash ═════════════════════════════════
 
 uint64_t ScreenObserver::computePHash(const uint8_t* bgra, int width, int height) {
-    // Step 1: Downscale to 8x8 grayscale (area averaging)
-    // This is the key insight: we don't need full resolution for change detection
-    float gray[8][8] = {};
-    int block_w = width / 8;
-    int block_h = height / 8;
+    if (width < 32 || height < 32) return 0;
 
-    if (block_w == 0 || block_h == 0) return 0;
+    // Step 1: Downscale to 32x32 grayscale (area averaging)
+    float gray[32][32] = {};
+    int block_w = width / 32;
+    int block_h = height / 32;
 
-    for (int by = 0; by < 8; by++) {
-        for (int bx = 0; bx < 8; bx++) {
+    for (int by = 0; by < 32; by++) {
+        for (int bx = 0; bx < 32; bx++) {
             float sum = 0;
             int count = 0;
             int y_start = by * block_h;
             int x_start = bx * block_w;
-            // Sample every 4th pixel for speed (still accurate enough)
-            for (int y = y_start; y < y_start + block_h; y += 4) {
-                for (int x = x_start; x < x_start + block_w; x += 4) {
+            // Target roughly ~16 samples per block to stay fast
+            int step_y = std::max(1, block_h / 4);
+            int step_x = std::max(1, block_w / 4);
+            for (int y = y_start; y < y_start + block_h; y += step_y) {
+                for (int x = x_start; x < x_start + block_w; x += step_x) {
                     int idx = (y * width + x) * 4;
-                    // BGRA → grayscale (fast integer approx)
-                    float g = bgra[idx] * 0.114f + bgra[idx+1] * 0.587f + bgra[idx+2] * 0.299f;
-                    sum += g;
+                    // BGRA → grayscale
+                    sum += bgra[idx] * 0.114f + bgra[idx+1] * 0.587f + bgra[idx+2] * 0.299f;
                     count++;
                 }
             }
-            gray[by][bx] = (count > 0) ? sum / count : 0;
+            gray[by][bx] = (count > 0) ? sum / count : 0.0f;
         }
     }
 
-    // Step 2: Compute mean of 8x8 grid
-    float mean = 0;
-    for (int y = 0; y < 8; y++)
-        for (int x = 0; x < 8; x++)
-            mean += gray[y][x];
-    mean /= 64.0f;
+    // Step 2: Compute top-left 8x8 DCT coefficients (low frequencies)
+    // Precompute cosine table for massive speedup
+    static float cos_table[32][8];
+    static bool table_init = false;
+    if (!table_init) {
+        for (int i = 0; i < 32; i++) {
+            for (int j = 0; j < 8; j++) {
+                cos_table[i][j] = std::cos((2.0f * i + 1.0f) * j * 3.141592653589793f / 64.0f);
+            }
+        }
+        table_init = true;
+    }
 
-    // Step 3: Generate 64-bit hash (each bit = pixel > mean)
+    float dct[8][8];
+    float total_dct = 0.0f;
+    for (int v = 0; v < 8; v++) {
+        for (int u = 0; u < 8; u++) {
+            float sum = 0.0f;
+            for (int y = 0; y < 32; y++) {
+                for (int x = 0; x < 32; x++) {
+                    sum += gray[y][x] * cos_table[x][u] * cos_table[y][v];
+                }
+            }
+            float cu = (u == 0) ? 0.70710678f : 1.0f;
+            float cv = (v == 0) ? 0.70710678f : 1.0f;
+            dct[v][u] = 0.25f * cu * cv * sum;
+            
+            // Accumulate mean (skip DC component at [0][0])
+            if (u != 0 || v != 0) {
+                total_dct += dct[v][u];
+            }
+        }
+    }
+
+    // Step 3: Compute mean of the 63 AC coefficients
+    float mean = total_dct / 63.0f;
+
+    // Step 4: Generate 64-bit hash (each bit = 1 if coef > mean)
     uint64_t hash = 0;
-    for (int y = 0; y < 8; y++)
-        for (int x = 0; x < 8; x++)
-            if (gray[y][x] > mean)
-                hash |= (1ULL << (y * 8 + x));
+    int bit_index = 0;
+    for (int v = 0; v < 8; v++) {
+        for (int u = 0; u < 8; u++) {
+            // Compare against mean (even for DC, though DC is usually > mean)
+            if (dct[v][u] > mean) {
+                hash |= (1ULL << bit_index);
+            }
+            bit_index++;
+        }
+    }
 
     return hash;
 }
@@ -435,6 +483,86 @@ void ScreenObserver::workerLoop() {
     }
 
     releaseDXGI();
+}
+
+// ═══════════════════ JPEG Frame Capture ══════════════════════════════
+
+std::vector<uint8_t> ScreenObserver::getCurrentFrameJpeg(int quality) const {
+    std::vector<uint8_t> jpeg_data;
+
+    // We need to do a one-shot DXGI capture. Since the observer may or may not
+    // be running, we use a simpler GDI fallback for maximum reliability.
+    // GDI BitBlt is ~2ms for a full screen — acceptable for one-shot.
+
+    HDC hScreen = GetDC(nullptr);
+    if (!hScreen) return jpeg_data;
+
+    int cx = GetSystemMetrics(SM_CXSCREEN);
+    int cy = GetSystemMetrics(SM_CYSCREEN);
+
+    HDC hMemDC = CreateCompatibleDC(hScreen);
+    HBITMAP hBmp = CreateCompatibleBitmap(hScreen, cx, cy);
+    auto hOld = SelectObject(hMemDC, hBmp);
+    BitBlt(hMemDC, 0, 0, cx, cy, hScreen, 0, 0, SRCCOPY);
+    SelectObject(hMemDC, hOld);
+    ReleaseDC(nullptr, hScreen);
+
+    // Encode HBITMAP → JPEG via GDI+
+    Gdiplus::GdiplusStartupInput gdipInput;
+    ULONG_PTR gdipToken = 0;
+    if (Gdiplus::GdiplusStartup(&gdipToken, &gdipInput, nullptr) == Gdiplus::Ok) {
+        Gdiplus::Bitmap bmp(hBmp, nullptr);
+
+        // Find JPEG encoder CLSID
+        UINT num = 0, size = 0;
+        Gdiplus::GetImageEncodersSize(&num, &size);
+        if (size > 0) {
+            std::vector<uint8_t> buf(size);
+            auto* encoders = reinterpret_cast<Gdiplus::ImageCodecInfo*>(buf.data());
+            Gdiplus::GetImageEncoders(num, size, encoders);
+
+            CLSID jpegClsid{};
+            for (UINT i = 0; i < num; i++) {
+                if (wcscmp(encoders[i].MimeType, L"image/jpeg") == 0) {
+                    jpegClsid = encoders[i].Clsid;
+                    break;
+                }
+            }
+
+            // Encode to IStream
+            IStream* pStream = nullptr;
+            if (SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &pStream))) {
+                Gdiplus::EncoderParameters params;
+                params.Count = 1;
+                params.Parameter[0].Guid = Gdiplus::EncoderQuality;
+                params.Parameter[0].Type = Gdiplus::EncoderParameterValueTypeLong;
+                params.Parameter[0].NumberOfValues = 1;
+                ULONG q = static_cast<ULONG>(quality);
+                params.Parameter[0].Value = &q;
+
+                if (bmp.Save(pStream, &jpegClsid, &params) == Gdiplus::Ok) {
+                    STATSTG stat{};
+                    pStream->Stat(&stat, STATFLAG_NONAME);
+                    ULONG total = static_cast<ULONG>(stat.cbSize.QuadPart);
+                    jpeg_data.resize(total);
+
+                    LARGE_INTEGER li{};
+                    pStream->Seek(li, STREAM_SEEK_SET, nullptr);
+                    ULONG bytesRead = 0;
+                    pStream->Read(jpeg_data.data(), total, &bytesRead);
+                    jpeg_data.resize(bytesRead);
+                }
+                pStream->Release();
+            }
+        }
+        Gdiplus::GdiplusShutdown(gdipToken);
+    }
+
+    DeleteObject(hBmp);
+    DeleteDC(hMemDC);
+
+    LOG_INFO("ScreenObserver::getCurrentFrameJpeg — captured {}x{} -> {} bytes JPEG", cx, cy, jpeg_data.size());
+    return jpeg_data;
 }
 
 } // namespace vision

@@ -21,6 +21,7 @@
 #ifdef VISION_HAS_LLM
 struct llama_model;
 struct llama_context;
+struct clip_ctx;
 #endif
 
 namespace vision {
@@ -43,6 +44,11 @@ public:
     std::string generate(const std::string& prompt,
                          const std::vector<Message>& history,
                          StreamCallback stream_cb = nullptr) override;
+
+    std::string generateVision(const std::string& prompt,
+                               const std::vector<uint8_t>& image_bytes,
+                               const std::vector<Message>& history,
+                               StreamCallback stream_cb = nullptr) override;
 
     std::vector<float> getEmbeddings(const std::string& text) override;
 
@@ -68,6 +74,7 @@ private:
 #ifdef VISION_HAS_LLM
     llama_model* model_ = nullptr;
     llama_context* ctx_ = nullptr;
+    clip_ctx* ctx_clip_ = nullptr;
 #endif
 
     std::string model_path_;

@@ -82,6 +82,9 @@ public:
     /// Get count of valid snapshots in ring buffer
     int snapshotCount() const;
 
+    /// Capture current screen and return as JPEG-compressed bytes
+    std::vector<uint8_t> getCurrentFrameJpeg(int quality = 80) const;
+
 private:
     // ── DXGI resources (ComPtr = RAII, auto-Release on destruction) ──
     Microsoft::WRL::ComPtr<ID3D11Device> device_;

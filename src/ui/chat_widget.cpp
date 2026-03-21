@@ -1,13 +1,13 @@
 /**
  * @file chat_widget.cpp
- * @brief Discord-tier chat UI implementation
+ * @brief Modern conversational chat UI implementation
  *
- * Custom QPainter delegate renders each message as a styled card with:
- * - Left accent bar (purple=AI, green=User)
- * - Sender name in bold
- * - Word-wrapped text via QTextDocument
- * - Rounded corners via QPainterPath
- * - Hover highlight
+ * Custom QPainter delegate renders each message as a sleek bubble:
+ * - User: Vibrant blue bubble, right-aligned, white text
+ * - AI:   Deep zinc bubble, left-aligned, light text with violet sender
+ * - System: Subtle dark card, centered
+ * - Smooth rounded corners (18px radius)
+ * - Hover glow, copy-to-clipboard button
  */
 
 #include "chat_widget.h"
@@ -64,7 +64,7 @@ bool ChatMessageModel::setData(const QModelIndex& index, const QVariant& value, 
 
 Qt::ItemFlags ChatMessageModel::flags(const QModelIndex& index) const {
     if (!index.isValid()) return Qt::NoItemFlags;
-    return Qt::ItemIsEnabled | Qt::ItemIsEditable;  // Editable enables editorEvent
+    return Qt::ItemIsEnabled | Qt::ItemIsEditable;
 }
 
 void ChatMessageModel::addMessage(const QString& sender, const QString& text,
@@ -85,12 +85,11 @@ void ChatMessageModel::clear() {
 }
 
 void ChatMessageModel::streamToken(const QString& token) {
-    if (messages_.empty()) return; // Nowhere to stream to
+    if (messages_.empty()) return;
 
     int last_idx = static_cast<int>(messages_.size()) - 1;
     messages_[last_idx].text += token;
 
-    // Tell the view that exactly this one item changed
     QModelIndex idx = index(last_idx, 0);
     emit dataChanged(idx, idx, {TextRole, Qt::DisplayRole});
 }
@@ -98,24 +97,42 @@ void ChatMessageModel::streamToken(const QString& token) {
 // ═══════════════════ Delegate ═══════════════════════════════════════
 
 ChatMessageDelegate::ChatMessageDelegate(QObject* parent)
-    : QStyledItemDelegate(parent) {}
+    : QStyledItemDelegate(parent) {
+    
+    add_anim_ = new QVariantAnimation(this);
+    add_anim_->setStartValue(0.0f);
+    add_anim_->setEndValue(1.0f);
+    add_anim_->setDuration(400); // 400ms for snappy, fluid feel
+    add_anim_->setEasingCurve(QEasingCurve::OutExpo);
+    
+    // Trigger repaint of the viewport on every animation frame
+    connect(add_anim_, &QVariantAnimation::valueChanged, this, [this, parent](const QVariant&) {
+        if (auto* view = qobject_cast<QAbstractItemView*>(parent)) {
+            view->viewport()->update();
+        }
+    });
+}
+
+void ChatMessageDelegate::triggerNewMessageAnimation(int row) {
+    animating_row_ = row;
+    add_anim_->stop();
+    add_anim_->start();
+}
 
 QFont ChatMessageDelegate::senderFont() const {
-    QFont f("Inter", 11);
-    if (!QFontInfo(f).exactMatch()) f.setFamily("Segoe UI");
-    f.setBold(true);
+    QFont f("Segoe UI", 10);
+    f.setWeight(QFont::DemiBold);
     return f;
 }
 
 QFont ChatMessageDelegate::messageFont() const {
-    QFont f("Inter", 10);
-    if (!QFontInfo(f).exactMatch()) f.setFamily("Segoe UI");
+    QFont f("Segoe UI", 10);
+    f.setWeight(QFont::Normal);
     return f;
 }
 
 QFont ChatMessageDelegate::timestampFont() const {
-    QFont f("Inter", 8);
-    if (!QFontInfo(f).exactMatch()) f.setFamily("Segoe UI");
+    QFont f("Segoe UI", 8);
     f.setWeight(QFont::Light);
     return f;
 }
@@ -123,7 +140,7 @@ QFont ChatMessageDelegate::timestampFont() const {
 int ChatMessageDelegate::bubbleTextWidth(const QStyleOptionViewItem& option) const {
     int viewWidth = option.rect.width();
     int maxBubble = static_cast<int>(viewWidth * kMaxBubbleRatio);
-    return maxBubble - (kBubblePadding * 2) - kAccentBarWidth - kTimestampWidth;
+    return maxBubble - (kBubblePadding * 2) - kTimestampWidth;
 }
 
 int ChatMessageDelegate::calcTextHeight(const QString& text, int width) const {
@@ -134,8 +151,6 @@ int ChatMessageDelegate::calcTextHeight(const QString& text, int width) const {
     return static_cast<int>(doc.size().height());
 }
 
-// ═══ SHARED GEOMETRY — used by BOTH paint() and editorEvent() ═══
-// If these go out of sync, clicks won't match the drawn icon!
 QRect ChatMessageDelegate::getCopyButtonRect(const QRect& bubbleRect) const {
     return QRect(
         bubbleRect.right() - kBubblePadding - kCopyBtnSize,
@@ -166,7 +181,7 @@ bool ChatMessageDelegate::editorEvent(QEvent* event, QAbstractItemModel* model,
     int actualTextWidth = static_cast<int>(doc.idealWidth()) + 1;
     int textHeight = static_cast<int>(doc.size().height());
 
-    int bubbleContentWidth = std::min(actualTextWidth + kAccentBarWidth + kTimestampWidth,
+    int bubbleContentWidth = std::min(actualTextWidth + kTimestampWidth,
                                        maxBubbleWidth - kBubblePadding * 2);
     int totalBubbleWidth = bubbleContentWidth + kBubblePadding * 2;
     int bubbleX = isUser ? (viewWidth - totalBubbleWidth - kBubbleMarginH)
@@ -175,24 +190,18 @@ bool ChatMessageDelegate::editorEvent(QEvent* event, QAbstractItemModel* model,
     int bubbleHeight = kSenderHeight + kBubblePadding + textHeight + kBubblePadding;
     QRect bubbleRect(bubbleX, bubbleY, totalBubbleWidth, bubbleHeight);
 
-    // Check if click is inside copy button area
     QRect copyBtn = getCopyButtonRect(bubbleRect);
     if (copyBtn.contains(me->pos())) {
-        // Copy to clipboard
         QApplication::clipboard()->setText(text);
-
-        // Set "Copied ✓" state
         model->setData(index, true, CopiedStateRole);
 
-        // Reset after 2 seconds
         QPersistentModelIndex pIdx(index);
         QTimer::singleShot(2000, [model, pIdx]() {
             if (pIdx.isValid()) {
                 model->setData(pIdx, false, CopiedStateRole);
             }
         });
-
-        return true;  // Event consumed
+        return true;
     }
     return false;
 }
@@ -203,7 +212,6 @@ QSize ChatMessageDelegate::sizeHint(const QStyleOptionViewItem& option,
     int textWidth = bubbleTextWidth(option);
     int textHeight = calcTextHeight(text, textWidth);
 
-    // Total height = top margin + sender line + padding + text + padding + bottom margin
     int totalHeight = kBubbleMarginV + kSenderHeight + kBubblePadding + textHeight
                     + kBubblePadding + kBubbleMarginV;
 
@@ -215,6 +223,17 @@ void ChatMessageDelegate::paint(QPainter* painter,
                                   const QModelIndex& index) const {
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setRenderHint(QPainter::TextAntialiasing, true);
+
+    // ── Kinetic Animation Math ──────────────────────────────────
+    float anim_progress = 1.0f;
+    if (index.row() == animating_row_ && add_anim_->state() == QAbstractAnimation::Running) {
+        anim_progress = add_anim_->currentValue().toFloat();
+    }
+
+    // Apply global fade-in and slide-up for this item
+    painter->setOpacity(anim_progress);
+    painter->translate(0, 20.0f * (1.0f - anim_progress));
 
     // ── Extract data ────────────────────────────────────────────
     QString sender = index.data(SenderRole).toString();
@@ -228,16 +247,25 @@ void ChatMessageDelegate::paint(QPainter* painter,
 
     // ── Colors ──────────────────────────────────────────────────
     QColor bubbleBg = isSystem ? bgSystem_ : (isUser ? bgUser_ : bgAI_);
-    QColor accent = isUser ? accentUser_ : accentAI_;
-    QColor senderColor = isUser ? QColor(255, 255, 255) : accentAI_;
-    if (isSystem) senderColor = dimText_;
-    if (isHovered && !isSystem) bubbleBg = hoverBg_;
+    QColor msgTextColor = isUser ? textUser_ : textColor_;
+    QColor senderColor = isUser ? senderUser_ : senderAI_;
+    if (isSystem) {
+        senderColor = dimText_;
+        msgTextColor = dimText_;
+    }
+    if (isHovered && !isSystem) {
+        // Subtle brightness boost on hover
+        if (isUser) {
+            bubbleBg = QColor(79, 148, 255);   // Lighter blue
+        } else {
+            bubbleBg = hoverBg_;
+        }
+    }
 
     // ── Geometry ────────────────────────────────────────────────
     int viewWidth = option.rect.width();
     int maxBubbleWidth = static_cast<int>(viewWidth * kMaxBubbleRatio);
 
-    // Calculate actual text width needed (may be less than max)
     QTextDocument doc;
     doc.setDefaultFont(messageFont());
     doc.setTextWidth(bubbleTextWidth(option));
@@ -246,7 +274,7 @@ void ChatMessageDelegate::paint(QPainter* painter,
     int textHeight = static_cast<int>(doc.size().height());
 
     // Bubble width: fit content but don't exceed max
-    int bubbleContentWidth = std::min(actualTextWidth + kAccentBarWidth + kTimestampWidth,
+    int bubbleContentWidth = std::min(actualTextWidth + kTimestampWidth,
                                        maxBubbleWidth - kBubblePadding * 2);
     int totalBubbleWidth = bubbleContentWidth + kBubblePadding * 2;
 
@@ -258,31 +286,22 @@ void ChatMessageDelegate::paint(QPainter* painter,
 
     QRect bubbleRect(bubbleX, bubbleY, totalBubbleWidth, bubbleHeight);
 
-    // ── Draw bubble background ──────────────────────────────────
+    // ── Draw bubble background with smooth rounded corners ──────
     QPainterPath path;
     path.addRoundedRect(bubbleRect, kBubbleRadius, kBubbleRadius);
     painter->fillPath(path, bubbleBg);
 
-    // ── Draw accent bar (left edge for AI, right edge for User) ─
-    if (!isSystem) {
-        QRect barRect;
-        if (isUser) {
-            barRect = QRect(bubbleRect.right() - kAccentBarWidth,
-                           bubbleRect.y(), kAccentBarWidth, bubbleRect.height());
-        } else {
-            barRect = QRect(bubbleRect.x(), bubbleRect.y(),
-                           kAccentBarWidth, bubbleRect.height());
-        }
-        // Clip to rounded rect
+    // ── Subtle border for AI bubbles (premium glass effect) ─────
+    if (!isUser && !isSystem) {
         painter->save();
-        painter->setClipPath(path);
-        painter->fillRect(barRect, accent);
+        painter->setPen(QPen(QColor(63, 63, 70), 1.0));  // Zinc-700 border
+        painter->drawPath(path);
         painter->restore();
     }
 
     // ── Draw sender name ────────────────────────────────────────
-    int textStartX = bubbleRect.x() + kBubblePadding + (isUser ? 0 : kAccentBarWidth);
-    int textAvailWidth = bubbleRect.width() - kBubblePadding * 2 - kAccentBarWidth;
+    int textStartX = bubbleRect.x() + kBubblePadding;
+    int textAvailWidth = bubbleRect.width() - kBubblePadding * 2;
 
     QRect senderRect(textStartX, bubbleY + 6, textAvailWidth - kTimestampWidth, kSenderHeight);
     painter->setFont(senderFont());
@@ -293,46 +312,43 @@ void ChatMessageDelegate::paint(QPainter* painter,
     QRect timeRect(bubbleRect.right() - kBubblePadding - kTimestampWidth - kCopyBtnSize - 4,
                    bubbleY + 6, kTimestampWidth, kSenderHeight);
     painter->setFont(timestampFont());
-    painter->setPen(dimText_);
+    QColor timeColor = isUser ? QColor(191, 219, 254, 180) : dimText_;
+    painter->setPen(timeColor);
     QString timeStr = timestamp.toString("hh:mm");
     painter->drawText(timeRect, Qt::AlignRight | Qt::AlignVCenter, timeStr);
 
-    // ── Draw copy button (hover only, or "Copied ✓" feedback) ────
+    // ── Draw copy button ────────────────────────────────────────
     bool isCopied = index.data(CopiedStateRole).toBool();
     QRect copyBtn = getCopyButtonRect(bubbleRect);
 
     if (isCopied) {
-        // Green "Copied ✓" feedback
         QFont copyFont = timestampFont();
         copyFont.setBold(true);
         painter->setFont(copyFont);
-        painter->setPen(QColor(57, 255, 20));   // #39FF14 Neon Green
-        painter->drawText(copyBtn, Qt::AlignCenter, "✓");
+        painter->setPen(QColor(74, 222, 128));  // Green-400
+        painter->drawText(copyBtn, Qt::AlignCenter, "\u2713");
     } else if (isHovered) {
-        // Show copy icon on hover
         painter->setFont(timestampFont());
-        painter->setPen(dimText_);
-        painter->drawText(copyBtn, Qt::AlignCenter, "📋");
+        painter->setPen(isUser ? QColor(255, 255, 255, 150) : dimText_);
+        painter->drawText(copyBtn, Qt::AlignCenter, "\xF0\x9F\x93\x8B");
     }
 
     // ── Draw message text (with proper word-wrap) ───────────────
-    // Use QTextDocument for pixel-perfect word-wrap rendering
     QRect textRect(textStartX,
                    bubbleY + kSenderHeight + kBubblePadding - 2,
                    textAvailWidth, textHeight);
 
     painter->save();
     painter->translate(textRect.topLeft());
-    painter->setPen(textColor_);
+    painter->setPen(msgTextColor);
 
     QTextDocument renderDoc;
     renderDoc.setDefaultFont(messageFont());
     renderDoc.setTextWidth(textAvailWidth);
     renderDoc.setPlainText(text);
 
-    // Set default text color
     QAbstractTextDocumentLayout::PaintContext ctx;
-    ctx.palette.setColor(QPalette::Text, textColor_);
+    ctx.palette.setColor(QPalette::Text, msgTextColor);
     renderDoc.documentLayout()->draw(painter, ctx);
 
     painter->restore();
@@ -354,10 +370,10 @@ ChatWidget::ChatWidget(QWidget* parent) : QWidget(parent) {
     view_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     view_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     view_->setSelectionMode(QAbstractItemView::NoSelection);
-    view_->setMouseTracking(true);  // Enable hover effects in delegate
-    view_->setUniformItemSizes(false);  // Each bubble has different height
-    view_->setSpacing(0);  // We handle spacing in the delegate
-    view_->setFocusPolicy(Qt::NoFocus);  // Don't steal focus from input
+    view_->setMouseTracking(true);
+    view_->setUniformItemSizes(false);
+    view_->setSpacing(0);
+    view_->setFocusPolicy(Qt::NoFocus);
 
     // Smooth scrolling
     view_->verticalScrollBar()->setSingleStep(20);
@@ -369,31 +385,29 @@ ChatWidget::ChatWidget(QWidget* parent) : QWidget(parent) {
 
     setupStyle();
 
-    // Resize triggers sizeHint recalculation for word-wrap
     connect(model_, &QAbstractListModel::rowsInserted, this, &ChatWidget::scrollToBottom);
 }
 
 void ChatWidget::setupStyle() {
     view_->setStyleSheet(
         "QListView {"
-        "  background-color: #1e1f22;"
-        "  border: 1px solid #2b2d31;"
-        "  border-radius: 10px;"
+        "  background-color: #18181B;"    // Zinc-900
+        "  border: none;"
         "  outline: none;"
         "}"
         // ── Premium thin scrollbar ──
         "QScrollBar:vertical {"
         "  background-color: transparent;"
-        "  width: 8px;"
-        "  margin: 4px 2px 4px 0px;"
+        "  width: 6px;"
+        "  margin: 4px 1px 4px 0px;"
         "}"
         "QScrollBar::handle:vertical {"
-        "  background-color: #3f3f46;"
-        "  min-height: 30px;"
-        "  border-radius: 4px;"
+        "  background-color: #3F3F46;"    // Zinc-700
+        "  min-height: 40px;"
+        "  border-radius: 3px;"
         "}"
         "QScrollBar::handle:vertical:hover {"
-        "  background-color: #5865F2;"
+        "  background-color: #8B5CF6;"    // Violet-500
         "}"
         "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {"
         "  height: 0px;"
@@ -407,6 +421,11 @@ void ChatWidget::setupStyle() {
 void ChatWidget::addMessage(const QString& sender, const QString& text,
                              MessageType type) {
     model_->addMessage(sender, text, type);
+    
+    // Req 2: Trigger kinetic slide/fade for the freshly inserted message
+    int row = model_->rowCount() - 1;
+    delegate_->triggerNewMessageAnimation(row);
+    scrollToBottom();
 }
 
 void ChatWidget::clear() {
@@ -423,7 +442,6 @@ int ChatWidget::messageCount() const {
 }
 
 void ChatWidget::scrollToBottom() {
-    // Defer scroll so the view has time to layout the new item
     QTimer::singleShot(10, this, [this]() {
         view_->scrollToBottom();
     });

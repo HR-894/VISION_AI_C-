@@ -10,10 +10,11 @@
  */
 
 #include "vector_memory.h"
-#include <algorithm>
-#include <cstring>
-#include <cmath>
+#include "document_parser.h"
 #include <fstream>
+#include <iostream>
+#include <cmath>
+#include <cstring>
 #include <numeric>
 
 // AVX2 intrinsics
@@ -82,9 +83,9 @@ float VectorMemory::cosineSimilarityAVX2(const float* a, const float* b, int dim
     __m256 sum_bb = _mm256_setzero_ps();  // |b|² accumulator
 
     for (int i = 0; i < dim; i += 8) {
-        // ALIGNED load — requires 32-byte alignment (we guarantee this)
-        __m256 va = _mm256_load_ps(a + i);
-        __m256 vb = _mm256_load_ps(b + i);
+        // UNALIGNED load — safe for std::vector / heap allocations
+        __m256 va = _mm256_loadu_ps(a + i);
+        __m256 vb = _mm256_loadu_ps(b + i);
 
         // Fused multiply-add: sum += va * vb (single instruction!)
         sum_ab = _mm256_fmadd_ps(va, vb, sum_ab);
@@ -145,6 +146,57 @@ float VectorMemory::cosineSimilarity(const float* a, const float* b, int dim) {
     return cosineSimilarityScalar(a, b, dim);
 }
 
+// ═══════════════════ Trigram + Word-Hash Embedding ═══════════════════
+
+std::vector<float> VectorMemory::generateTrigramEmbedding(const std::string& text) {
+    // Generates a determinisitc 768-dimensional sparse embedding extremely fast
+    std::vector<float> embed(768, 0.0f);
+    if (text.empty()) return embed;
+
+    std::string lower = text;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+    // 1. Character Trigrams (hashes into the first 384 dimensions)
+    for (size_t i = 0; i + 2 < lower.size(); i++) {
+        uint32_t trigram_hash = (lower[i] * 31 * 31) + (lower[i+1] * 31) + lower[i+2];
+        embed[trigram_hash % 384] += 1.0f;
+    }
+
+    // 2. Word Hashes (hashes into the second 384 dimensions)
+    size_t start = 0;
+    while (start < lower.size()) {
+        while (start < lower.size() && !std::isalnum(lower[start])) {
+            start++;
+        }
+        if (start >= lower.size()) break;
+        size_t end = start + 1;
+        while (end < lower.size() && std::isalnum(lower[end])) {
+            end++;
+        }
+        
+        uint32_t word_hash = 5381;
+        for (size_t i = start; i < end; i++) {
+            word_hash = ((word_hash << 5) + word_hash) + lower[i];
+        }
+        embed[384 + (word_hash % 384)] += 1.0f;
+        start = end;
+    }
+
+    // 3. L2 Normalize the embedding
+    float norm = 0.0f;
+    for (float v : embed) {
+        norm += v * v;
+    }
+    if (norm > 0.0f) {
+        norm = std::sqrt(norm);
+        for (float& v : embed) {
+            v /= norm;
+        }
+    }
+    
+    return embed;
+}
+
 // ═══════════════════ Store ═══════════════════════════════════════════
 
 bool VectorMemory::store(const std::string& text, const std::string& context,
@@ -177,7 +229,9 @@ bool VectorMemory::store(const std::string& text, const std::string& context,
 
 bool VectorMemory::storeWithEmbedding(const std::string& text, const float* embedding,
                                         const std::string& context,
-                                        const std::vector<std::string>& tags) {
+                                        const std::vector<std::string>& tags,
+                                        const std::string& source_file,
+                                        int chunk_index) {
     if (!matrix_) return false;
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -199,6 +253,8 @@ bool VectorMemory::storeWithEmbedding(const std::string& text, const float* embe
     entry.context = context;
     entry.tags = tags;
     entry.created = std::chrono::steady_clock::now();
+    entry.source_file = source_file;
+    entry.chunk_index = chunk_index;
 
     if (count_ < (int)entries_.size()) {
         entries_[count_] = std::move(entry);
@@ -208,6 +264,51 @@ bool VectorMemory::storeWithEmbedding(const std::string& text, const float* embe
 
     count_++;
     return true;
+}
+
+// ═══════════════════ Document RAG (Phase 10) ════════════════════════
+int VectorMemory::ingestDocument(const std::string& filepath) {
+    if (!embed_fn_) {
+        LOG_ERROR("VectorMemory: Cannot ingest document without embedding function.");
+        return -1;
+    }
+
+    if (!DocumentParser::isSupported(filepath)) {
+        LOG_WARN("VectorMemory: Unsupported file type for ingestion: {}", filepath);
+        return -1;
+    }
+
+    std::string text = DocumentParser::parseToText(filepath);
+    if (text.empty()) {
+        LOG_WARN("VectorMemory: Parsed document is empty.");
+        return 0;
+    }
+
+    auto chunks = DocumentParser::chunkText(text, 512, 50);
+    int stored = 0;
+
+    for (const auto& chunk : chunks) {
+        auto embedding = embed_fn_(chunk.text);
+        if (embedding.empty()) {
+            LOG_WARN("VectorMemory: Failed to embed chunk {} of document {}", chunk.index, filepath);
+            continue;
+        }
+
+        // Dynamically set dim if not initialized
+        if (dim_ == 0) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (dim_ == 0) allocateMatrix(embedding.size());
+        }
+
+        if (embedding.size() == dim_) {
+            if (storeWithEmbedding(chunk.text, embedding.data(), "", {"document"}, filepath, chunk.index)) {
+                stored++;
+            }
+        }
+    }
+
+    LOG_INFO("VectorMemory: Ingested {} chunks from document: {}", stored, filepath);
+    return stored;
 }
 
 // ═══════════════════ Search ═════════════════════════════════════════
@@ -359,32 +460,61 @@ int VectorMemory::purgeOlderThan(int seconds) {
     return purged;
 }
 
-// ═══════════════════ Binary Persistence ══════════════════════════════
+// ═══════════════════ DPAPI Binary Persistence ═════════════════════════════
+
+static std::vector<BYTE> dpapi_encrypt_blob(const std::vector<BYTE>& plaintext) {
+    if (plaintext.empty()) return {};
+    DATA_BLOB input;
+    input.pbData = const_cast<BYTE*>(plaintext.data());
+    input.cbData = static_cast<DWORD>(plaintext.size());
+
+    DATA_BLOB output{};
+    if (CryptProtectData(&input, L"VisionAI_VectorMemory", nullptr, nullptr, nullptr,
+                          CRYPTPROTECT_UI_FORBIDDEN, &output)) {
+        std::vector<BYTE> result(output.pbData, output.pbData + output.cbData);
+        LocalFree(output.pbData);
+        return result;
+    }
+    return {};
+}
+
+static std::vector<BYTE> dpapi_decrypt_blob(const std::vector<BYTE>& encrypted) {
+    if (encrypted.empty()) return {};
+    DATA_BLOB input;
+    input.pbData = const_cast<BYTE*>(encrypted.data());
+    input.cbData = static_cast<DWORD>(encrypted.size());
+
+    DATA_BLOB output{};
+    if (CryptUnprotectData(&input, nullptr, nullptr, nullptr, nullptr,
+                            CRYPTPROTECT_UI_FORBIDDEN, &output)) {
+        std::vector<BYTE> result(output.pbData, output.pbData + output.cbData);
+        LocalFree(output.pbData);
+        return result;
+    }
+    return {};
+}
 
 bool VectorMemory::save(const std::string& path) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    std::ofstream file(path, std::ios::binary);
-    if (!file.is_open()) {
-        LOG_ERROR("VectorMemory: Cannot open {} for writing", path);
-        return false;
-    }
+    // Serialize to an in-memory buffer first
+    std::vector<BYTE> payload;
 
-    // Write header
     FileHeader header;
     header.count = count_;
     header.dim = dim_;
+    header.metadata_offset = 0; // Temp
 
-    // Placeholder for metadata offset (will be filled after matrix write)
-    auto header_pos = file.tellp();
-    file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    // Write header placeholder
+    payload.insert(payload.end(), reinterpret_cast<const BYTE*>(&header), reinterpret_cast<const BYTE*>(&header) + sizeof(header));
 
-    // Write matrix (raw floats — memcpy speed on load)
+    // Write matrix (raw floats)
     size_t matrix_bytes = static_cast<size_t>(count_) * padded_dim_ * sizeof(float);
-    file.write(reinterpret_cast<const char*>(matrix_.get()), matrix_bytes);
+    const BYTE* matrix_ptr = reinterpret_cast<const BYTE*>(matrix_.get());
+    payload.insert(payload.end(), matrix_ptr, matrix_ptr + matrix_bytes);
 
     // Record metadata offset
-    int64_t metadata_offset = file.tellp();
+    int64_t metadata_offset = payload.size();
 
     // Write metadata as JSON
     json meta = json::array();
@@ -397,34 +527,82 @@ bool VectorMemory::save(const std::string& path) const {
             {"text", e.text},
             {"context", e.context},
             {"tags", e.tags},
-            {"age_seconds", age_s}
+            {"age_seconds", age_s},
+            {"source_file", e.source_file},
+            {"chunk_index", e.chunk_index}
         });
     }
     std::string meta_str = meta.dump();
     uint32_t meta_len = static_cast<uint32_t>(meta_str.size());
-    file.write(reinterpret_cast<const char*>(&meta_len), sizeof(meta_len));
-    file.write(meta_str.data(), meta_str.size());
+    
+    payload.insert(payload.end(), reinterpret_cast<const BYTE*>(&meta_len), reinterpret_cast<const BYTE*>(&meta_len) + sizeof(meta_len));
+    payload.insert(payload.end(), meta_str.begin(), meta_str.end());
 
-    // Seek back and write metadata offset in header
-    file.seekp(header_pos);
+    // Fix header metadata_offset
     header.metadata_offset = metadata_offset;
-    file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    std::memcpy(payload.data(), &header, sizeof(header));
 
-    LOG_INFO("VectorMemory: Saved {} entries to {}", count_, path);
+    // DPAPI Encrypt
+    std::vector<BYTE> encrypted = dpapi_encrypt_blob(payload);
+    if (encrypted.empty()) {
+        LOG_ERROR("VectorMemory DPAPI encryption failed. Data not saved.");
+        return false;
+    }
+
+    std::ofstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        LOG_ERROR("VectorMemory: Cannot open {} for writing", path);
+        return false;
+    }
+    
+    // Write DPAPI magic marker so we know it's encrypted
+    char dpapi_magic[8] = {'D','P','A','P','I','V','E','C'};
+    file.write(dpapi_magic, 8);
+    file.write(reinterpret_cast<const char*>(encrypted.data()), encrypted.size());
+
+    LOG_INFO("VectorMemory: Saved {} entries to {} (DPAPI encrypted)", count_, path);
     return true;
 }
 
 bool VectorMemory::load(const std::string& path) {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file.is_open()) return false;
+    auto file_size = file.tellg();
+    file.seekg(0);
 
-    // Read header
+    if (file_size < 8) return false;
+
+    char magic[8];
+    file.read(magic, 8);
+    
+    std::vector<BYTE> decrypted;
+
+    if (std::memcmp(magic, "DPAPIVEC", 8) == 0) {
+        // It's encrypted
+        size_t encrypted_size = static_cast<size_t>(file_size - 8);
+        std::vector<BYTE> encrypted(encrypted_size);
+        file.read(reinterpret_cast<char*>(encrypted.data()), encrypted_size);
+        
+        decrypted = dpapi_decrypt_blob(encrypted);
+        if (decrypted.empty()) {
+            LOG_ERROR("VectorMemory DPAPI decryption failed!");
+            return false;
+        }
+    } else {
+        // Standard unencrypted (legacy data migration support)
+        file.seekg(0);
+        decrypted.resize(static_cast<size_t>(file_size));
+        file.read(reinterpret_cast<char*>(decrypted.data()), file_size);
+        LOG_WARN("VectorMemory loaded unencrypted legacy blob — will be encrypted on next save");
+    }
+
+    if (decrypted.size() < sizeof(FileHeader)) return false;
+
     FileHeader header;
-    file.read(reinterpret_cast<char*>(&header), sizeof(header));
+    std::memcpy(&header, decrypted.data(), sizeof(header));
 
-    // Validate magic
     if (std::memcmp(header.magic, "VMEM0001", 8) != 0) {
         LOG_ERROR("VectorMemory: Invalid file magic in {}", path);
         return false;
@@ -438,17 +616,19 @@ bool VectorMemory::load(const std::string& path) {
     
     allocateMatrix(header.dim);
 
-    // Read matrix (raw memcpy — fastest possible)
     size_t matrix_bytes = static_cast<size_t>(header.count) * padded_dim_ * sizeof(float);
-    file.read(reinterpret_cast<char*>(matrix_.get()), matrix_bytes);
+    if (sizeof(header) + matrix_bytes > decrypted.size()) return false;
+    
+    std::memcpy(matrix_.get(), decrypted.data() + sizeof(header), matrix_bytes);
 
-    // Read metadata
-    file.seekg(header.metadata_offset);
+    if (header.metadata_offset + sizeof(uint32_t) > decrypted.size()) return false;
+    
     uint32_t meta_len = 0;
-    file.read(reinterpret_cast<char*>(&meta_len), sizeof(meta_len));
+    std::memcpy(&meta_len, decrypted.data() + header.metadata_offset, sizeof(uint32_t));
 
-    std::string meta_str(meta_len, '\0');
-    file.read(meta_str.data(), meta_len);
+    if (header.metadata_offset + sizeof(uint32_t) + meta_len > decrypted.size()) return false;
+
+    std::string meta_str(reinterpret_cast<const char*>(decrypted.data() + header.metadata_offset + sizeof(uint32_t)), meta_len);
 
     auto meta = json::parse(meta_str, nullptr, false);
     if (meta.is_discarded()) {
@@ -456,7 +636,6 @@ bool VectorMemory::load(const std::string& path) {
         return false;
     }
 
-    // Rebuild entries
     entries_.clear();
     entries_.resize(header.count);
     auto now = std::chrono::steady_clock::now();
@@ -468,6 +647,10 @@ bool VectorMemory::load(const std::string& path) {
         entries_[i].tags = m.value("tags", std::vector<std::string>{});
         int age_s = m.value("age_seconds", 0);
         entries_[i].created = now - std::chrono::seconds(age_s);
+        
+        // RAG Metadata
+        entries_[i].source_file = m.value("source_file", "");
+        entries_[i].chunk_index = m.value("chunk_index", -1);
     }
 
     count_ = header.count;

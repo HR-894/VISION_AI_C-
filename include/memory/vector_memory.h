@@ -21,6 +21,8 @@
 #include <optional>
 #include <cstdint>
 #include <memory>
+#include <windows.h>
+#include <wincrypt.h>
 
 namespace vision {
 
@@ -34,6 +36,10 @@ struct MemoryEntry {
     std::vector<std::string> tags;                   // Semantic tags
     std::chrono::steady_clock::time_point created;   // When stored
     float relevance_score = 0.0f;                    // Last search score
+    
+    // RAG Metadata (Phase 10)
+    std::string source_file = "";
+    int chunk_index = -1;
 };
 
 struct MemorySearchResult {
@@ -68,7 +74,18 @@ public:
     /// Store with pre-computed embedding
     bool storeWithEmbedding(const std::string& text, const float* embedding,
                              const std::string& context = "",
-                             const std::vector<std::string>& tags = {});
+                             const std::vector<std::string>& tags = {},
+                             const std::string& source_file = "",
+                             int chunk_index = -1);
+
+    /// Generate a 768-dimensional Trigram + Word-Hash embedding natively
+    static std::vector<float> generateTrigramEmbedding(const std::string& text);
+
+    // ── Document RAG (Phase 10) ────────────────────────────────────
+    
+    /// Parse a local file, chunk it, embed it, and store into vector memory
+    /// Returns number of chunks ingested, or -1 on error.
+    int ingestDocument(const std::string& filepath);
 
     // ── Search ─────────────────────────────────────────────────────
 

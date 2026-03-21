@@ -75,6 +75,7 @@ private:
     // ── Helpers ──────────────────────────────────────────────────
     bool isActionRepeated(const std::string& key);
     void summarizeHistory();  // PRD Fix 5: compress old steps
+    std::string classifyIntent(const std::string& cmd) const;  // Phase 8: swarm router
 };
 
 } // namespace vision

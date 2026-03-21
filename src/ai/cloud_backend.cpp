@@ -112,7 +112,12 @@ std::string CloudBackend::generate(const std::string& prompt,
     std::string request_body = buildRequestJson(prompt, history);
 
     // Prepare response buffer
-    std::string response_data;
+    std::string full_response;
+    active_stream_cb_ = [&full_response, stream_cb](const std::string& piece) {
+        full_response += piece;
+        if (stream_cb) stream_cb(piece);
+    };
+    sse_buffer_.clear();
 
     // Reset curl handle for reuse
     curl_easy_reset(curl_);
@@ -132,9 +137,9 @@ std::string CloudBackend::generate(const std::string& prompt,
     headers = curl_slist_append(headers, "Content-Type: application/json");
     curl_easy_setopt(curl_, CURLOPT_HTTPHEADER, headers);
 
-    // Write callback to capture response
+    // Write callback to capture and parse SSE response chunks
     curl_easy_setopt(curl_, CURLOPT_WRITEFUNCTION, writeCallback);
-    curl_easy_setopt(curl_, CURLOPT_WRITEDATA, &response_data);
+    curl_easy_setopt(curl_, CURLOPT_WRITEDATA, this);
 
     // Progress callback for cancellation support
     curl_easy_setopt(curl_, CURLOPT_NOPROGRESS, 0L);
@@ -167,19 +172,18 @@ std::string CloudBackend::generate(const std::string& prompt,
     // Check HTTP status code
     long http_code = 0;
     curl_easy_getinfo(curl_, CURLINFO_RESPONSE_CODE, &http_code);
+    active_stream_cb_ = nullptr; // Clear callback
+
     if (http_code != 200) {
-        LOG_ERROR("CloudBackend: HTTP {} from Groq API. Response: {}",
-                  http_code, response_data.substr(0, 500));
+        LOG_ERROR("CloudBackend: HTTP {} from Groq API.", http_code);
         return "";
     }
 
-    // Parse the JSON response and extract content
-    std::string result = parseResponseJson(response_data);
-    if (result.empty()) {
+    if (full_response.empty()) {
         LOG_WARN("CloudBackend: Empty response from Groq API");
     }
 
-    return result;
+    return full_response;
 #else
     (void)prompt;
     (void)history;
@@ -244,7 +248,7 @@ std::string CloudBackend::buildRequestJson(const std::string& prompt,
         {"messages", messages},
         {"temperature", temperature_},
         {"max_tokens", max_tokens_},
-        {"stream", false}
+        {"stream", true}
     };
 
     return request.dump();
@@ -285,9 +289,44 @@ std::string CloudBackend::resolveApiKey() const {
 
 #ifdef VISION_HAS_CLOUD
 size_t CloudBackend::writeCallback(char* ptr, size_t size, size_t nmemb, void* userdata) {
-    auto* response = static_cast<std::string*>(userdata);
+    auto* self = static_cast<CloudBackend*>(userdata);
     size_t total = size * nmemb;
-    response->append(ptr, total);
+    
+    // Append new data to the SSE buffer
+    self->sse_buffer_.append(ptr, total);
+    
+    // Parse complete lines (SSE sends "data: ...\n\n")
+    size_t pos;
+    while ((pos = self->sse_buffer_.find('\n')) != std::string::npos) {
+        std::string line = self->sse_buffer_.substr(0, pos);
+        self->sse_buffer_.erase(0, pos + 1);
+        
+        // Remove trailing \r if present
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        
+        if (line.rfind("data: ", 0) == 0) {  // starts_with
+            std::string data = line.substr(6);
+            if (data == "[DONE]") continue;
+            
+            try {
+                auto j = json::parse(data);
+                if (j.contains("choices") && !j["choices"].empty()) {
+                    auto& choice = j["choices"][0];
+                    if (choice.contains("delta") && choice["delta"].contains("content") && !choice["delta"]["content"].is_null()) {
+                        std::string content = choice["delta"]["content"].get<std::string>();
+                        if (!content.empty() && self->active_stream_cb_) {
+                            self->active_stream_cb_(content);
+                        }
+                    }
+                }
+            } catch (const json::exception&) {
+                // Incomplete JSON chunk, will be handled if needed, but normally SSE chunks are complete objects
+            }
+        }
+    }
+    
     return total;
 }
 

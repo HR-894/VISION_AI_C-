@@ -24,6 +24,8 @@
 #include <QKeySequence>
 
 #include <windows.h>
+#include <windowsx.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <thread>
@@ -35,6 +37,8 @@
 #include <iomanip>
 #include <eh.h>       // _set_se_translator: converts SEH → C++ exceptions
 #include <QtConcurrent>  // PRD Fix 1: async command execution
+#include <QProcess>         // Phase 9: OTA update installer launch
+#include <QCoreApplication> // Phase 8: plugin directory resolution
 
 #ifdef VISION_HAS_SPDLOG
 #include <spdlog/spdlog.h>
@@ -133,11 +137,15 @@ VisionAI::VisionAI(QWidget* parent)
     config_.load();
     
     // Setup UI
+    LOG_INFO("Trace: Before setupUI");
     setupUI();
+    LOG_INFO("Trace: After setupUI");
     setupTrayIcon();
+    LOG_INFO("Trace: After setupTrayIcon");
     setupHotkey();
     
     // Auto-configure based on hardware
+    LOG_INFO("Trace: Before getRecommendedConfig");
     auto recommended = profiler_.getRecommendedConfig();
     LOG_INFO("Device: {}", profiler_.getStatusString());
     
@@ -148,6 +156,7 @@ VisionAI::VisionAI(QWidget* parent)
     stats_timer_ = new QTimer(this);
     connect(stats_timer_, &QTimer::timeout, this, &VisionAI::updateSystemStats);
     stats_timer_->start(5000);
+    LOG_INFO("Trace: After stats_timer");
     
     // Thread-safe message passing
     connect(this, &VisionAI::messageReady, this, &VisionAI::appendMessage);
@@ -161,6 +170,50 @@ VisionAI::VisionAI(QWidget* parent)
 
     updateStatus("Ready | " + profiler_.getStatusString());
     addMessage("VISION", "Hello! I'm VISION AI (C++)). Type a command or press Ctrl+Alt+Space to use voice.");
+    // ── Phase 11: OS Semantic Timeline ───────────────────────────
+    timeline_logger_ = std::make_unique<TimelineLogger>();
+    timeline_logger_->start();
+
+    // ── Phase 9: OTA Update Manager ──────────────────────────────
+    update_manager_ = std::make_unique<UpdateManager>(this);
+    update_manager_->setRepository("HR-894/VISION-AI");
+    update_manager_->setCurrentVersion(QString::fromStdString(
+        std::to_string(VISION_AI_VERSION_MAJOR) + "." +
+        std::to_string(VISION_AI_VERSION_MINOR) + "." +
+        std::to_string(VISION_AI_VERSION_PATCH)));
+
+    connect(update_manager_.get(), &UpdateManager::updateReady,
+            this, [this](const QString& path) {
+        auto result = QMessageBox::information(this, "Update Available",
+            QString("VISION AI %1 is ready to install.\n\nRestart now to apply the update?")
+                .arg(update_manager_->latestVersion()),
+            QMessageBox::Yes | QMessageBox::No);
+        if (result == QMessageBox::Yes) {
+            // Launch the installer and exit
+            QProcess::startDetached(path, QStringList() << "/SILENT");
+            QApplication::quit();
+        }
+    });
+
+    connect(update_manager_.get(), &UpdateManager::updateError,
+            this, [](const QString& err) {
+        LOG_WARN("Update check error: {}", err.toStdString());
+    });
+
+    // Check for updates in the background (non-blocking)
+    QTimer::singleShot(3000, update_manager_.get(), &UpdateManager::checkForUpdates);
+
+    // ── Phase 8: Load plugins from bin/plugins/ ──────────────────
+#ifdef VISION_HAS_LLM
+    if (action_executor_) {
+        std::string plugin_dir = (fs::path(QCoreApplication::applicationDirPath()
+            .toStdString()) / "plugins").string();
+        int loaded = action_executor_->loadPlugins(plugin_dir);
+        if (loaded > 0) {
+            LOG_INFO("Loaded {} action plugins from {}", loaded, plugin_dir);
+        }
+    }
+#endif
 }
 
 VisionAI::~VisionAI() {
@@ -196,6 +249,9 @@ VisionAI::~VisionAI() {
     // Stop Screen Observer (before destroying OCR engine)
     if (screen_observer_) screen_observer_->stop();
 
+    // Stop Timeline Logger
+    if (timeline_logger_) timeline_logger_->stop();
+
     // STEP 4: Unregister hotkeys
     if (hotkey_registered_) {
         UnregisterHotKey((HWND)winId(), hotkey_id_);
@@ -230,63 +286,137 @@ VisionAI::~VisionAI() {
 // ═══════════════════ UI Setup ═══════════════════
 
 void VisionAI::setupUI() {
+    LOG_INFO("Trace: setupUI - Start");
     setWindowTitle("VISION AI");
     setMinimumSize(700, 500);
     resize(850, 650);
+    
+    // Windows 11 Frameless Mica Window
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowMinMaxButtonsHint);
+    setAttribute(Qt::WA_TranslucentBackground);
 
-    // ── Global Hacker Dark Theme (Matrix Black + Neon Green) ────
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+    MARGINS margins = {-1, -1, -1, -1};
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
+    
+#ifndef DWMWA_SYSTEMBACKDROP_TYPE
+#define DWMWA_SYSTEMBACKDROP_TYPE 38
+#define DWMSBT_MAINWINDOW 2
+#endif
+    int backdrop_type = DWMSBT_MAINWINDOW;
+    DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop_type, sizeof(backdrop_type));
+
+    // ── Global Premium Dark Theme (Zinc + Violet/Blue Accents) ────
     setStyleSheet(
-        "QMainWindow, QWidget { background-color: #0A0A0A; color: #E0E0E0; }"
-        "QToolTip { background-color: #111111; color: #E0E0E0; border: 1px solid #39FF14; "
+        "QMainWindow { background: transparent; }"
+        "QWidget#centralWidget { background: transparent; }"
+        "QToolTip { background-color: #27272A; color: #E4E4E7; border: 1px solid #3B82F6; "
         "  border-radius: 6px; padding: 4px 8px; font-size: 12px; }"
     );
 
     auto* central = new QWidget(this);
+    central->setObjectName("centralWidget");
     setCentralWidget(central);
     auto* main_layout = new QVBoxLayout(central);
-    main_layout->setContentsMargins(14, 14, 14, 14);
-    main_layout->setSpacing(10);
+    main_layout->setContentsMargins(0, 0, 0, 0); // Remove outer margin to let glass touch edges
+    main_layout->setSpacing(0);
     
-    // ── Header ───────────────────────────────────────────────────
-    auto* header = new QHBoxLayout();
-    auto* title = new QLabel("🔮 VISION AI");
-    title->setStyleSheet(
-        "font-size: 22px; font-weight: bold; color: #39FF14; "
-        "font-family: 'Inter', 'Segoe UI', sans-serif;");
+    // ── Custom Title Bar ─────────────────────────────────────────
+    auto* title_bar = new QWidget();
+    title_bar->setObjectName("titleBar");
+    title_bar->setFixedHeight(40);
+    auto* title_layout = new QHBoxLayout(title_bar);
+    title_layout->setContentsMargins(14, 0, 0, 0);
+    
+    auto* icon_label = new QLabel("🔮");
+    icon_label->setStyleSheet("font-size: 16px; background: transparent;");
+    auto* title_label = new QLabel(" VISION AI");
+    title_label->setStyleSheet(
+        "font-size: 14px; font-weight: bold; color: #A78BFA; "
+        "font-family: 'Segoe UI', sans-serif; background: transparent;");
 
     cpu_label_ = new QLabel("CPU: --");
-    cpu_label_->setStyleSheet("color: #555555; font-size: 11px; font-family: 'Inter', 'Segoe UI';");
+    cpu_label_->setStyleSheet("color: #71717A; font-size: 11px; font-family: 'Segoe UI'; background: transparent;");
     ram_label_ = new QLabel("RAM: --");
-    ram_label_->setStyleSheet("color: #555555; font-size: 11px; font-family: 'Inter', 'Segoe UI';");
+    ram_label_->setStyleSheet("color: #71717A; font-size: 11px; font-family: 'Segoe UI'; background: transparent;");
+
+    title_layout->addWidget(icon_label);
+    title_layout->addWidget(title_label);
+    title_layout->addSpacing(20);
+    title_layout->addWidget(cpu_label_);
+    title_layout->addWidget(ram_label_);
+    title_layout->addStretch();
+    
+    // Window Controls
+    auto* btn_min = new QPushButton("—");
+    auto* btn_max = new QPushButton("□");
+    auto* btn_close = new QPushButton("✕");
+    
+    QString winBtnStyle = 
+        "QPushButton { border: none; background: transparent; color: #E4E4E7; font-size: 12px; font-weight: bold; width: 46px; border-radius: 0px; } "
+        "QPushButton:hover { background: rgba(255, 255, 255, 0.1); }";
+    QString winCloseStyle = 
+        "QPushButton { border: none; background: transparent; color: #E4E4E7; font-size: 12px; font-weight: bold; width: 46px; border-radius: 0px; } "
+        "QPushButton:hover { background: #E81123; color: white; }";
+        
+    btn_min->setStyleSheet(winBtnStyle);
+    btn_max->setStyleSheet(winBtnStyle);
+    btn_close->setStyleSheet(winCloseStyle);
+    
+    connect(btn_min, &QPushButton::clicked, this, &QWidget::showMinimized);
+    connect(btn_max, &QPushButton::clicked, [this, btn_max]() {
+        if (isMaximized()) { showNormal(); btn_max->setText("□"); }
+        else { showMaximized(); btn_max->setText("🗗"); }
+    });
+    connect(btn_close, &QPushButton::clicked, this, &QWidget::close);
+    
+    title_layout->addWidget(btn_min);
+    title_layout->addWidget(btn_max);
+    title_layout->addWidget(btn_close);
+    
+    main_layout->addWidget(title_bar);
+
+    // Inner wrapper for the rest of the contents with margins
+    auto* content_widget = new QWidget();
+    auto* content_layout = new QVBoxLayout(content_widget);
+    content_layout->setContentsMargins(14, 0, 14, 14);
+    content_layout->setSpacing(10);
+    main_layout->addWidget(content_widget, 1);
+    
+    // ── Header (Settings/Presets) ────────────────────────────────
+    LOG_INFO("Trace: setupUI - Header");
+    auto* header = new QHBoxLayout();
+    header->addStretch();
 
     auto* settings_btn = new QPushButton("⚙");
     settings_btn->setFixedSize(34, 34);
     settings_btn->setStyleSheet(
-        "QPushButton { font-size: 16px; border: 1px solid #1A1A1A; border-radius: 8px; "
-        "  background: #111111; color: #E0E0E0; }"
-        "QPushButton:hover { background: #1A1A1A; border-color: #39FF14; color: #39FF14; }");
+        "QPushButton { font-size: 16px; border: 1px solid #27272A; border-radius: 8px; "
+        "  background: #27272A; color: #E4E4E7; }"
+        "QPushButton:hover { background: #3F3F46; border-color: #8B5CF6; color: #A78BFA; }");
     connect(settings_btn, &QPushButton::clicked, this, &VisionAI::onSettingsClicked);
 
     auto* help_btn = new QPushButton("?");
     help_btn->setFixedSize(34, 34);
     help_btn->setStyleSheet(
-        "QPushButton { font-size: 16px; border: 1px solid #1A1A1A; border-radius: 8px; "
-        "  background: #111111; color: #E0E0E0; }"
-        "QPushButton:hover { background: #1A1A1A; border-color: #39FF14; color: #39FF14; }");
+        "QPushButton { font-size: 16px; border: 1px solid #27272A; border-radius: 8px; "
+        "  background: #27272A; color: #E4E4E7; }"
+        "QPushButton:hover { background: #3F3F46; border-color: #8B5CF6; color: #A78BFA; }");
     connect(help_btn, &QPushButton::clicked, this, &VisionAI::onHelpClicked);
 
     header->addWidget(title);
     header->addStretch();
     
     // ── Req 1: AI Preset Selector ──
+    LOG_INFO("Trace: setupUI - Combo box");
     preset_selector_ = new QComboBox();
     preset_selector_->setStyleSheet(
-        "QComboBox { background: #111111; border: 1px solid #1A1A1A; border-radius: 8px; "
-        "  padding: 4px 10px; font-size: 12px; color: #E0E0E0; "
-        "  font-family: 'Inter', 'Segoe UI'; min-width: 140px; }"
+        "QComboBox { background: #27272A; border: 1px solid #3F3F46; border-radius: 8px; "
+        "  padding: 4px 10px; font-size: 12px; color: #E4E4E7; "
+        "  font-family: 'Segoe UI'; min-width: 140px; }"
         "QComboBox::drop-down { border: none; }"
-        "QComboBox QAbstractItemView { background: #111111; color: #E0E0E0; "
-        "  selection-background-color: #39FF14; selection-color: #000000; outline: none; border: 1px solid #1A1A1A; }"
+        "QComboBox QAbstractItemView { background: #27272A; color: #E4E4E7; "
+        "  selection-background-color: #3B82F6; selection-color: #FFFFFF; outline: none; border: 1px solid #3F3F46; }"
     );
     // Load presets from external presets.json
     nlohmann::json config_presets = nlohmann::json::array();
@@ -315,30 +445,30 @@ void VisionAI::setupUI() {
     mode_toggle_->setToolTip("Uncheck for instant Chat-Only mode (faster, no PC control)");
     mode_toggle_->setChecked(false); // Default: Chat Only (safe)
     mode_toggle_->setStyleSheet(
-        "QCheckBox { color: #E0E0E0; spacing: 6px; font-size: 12px; "
-        "  font-family: 'Inter', 'Segoe UI'; }"
+        "QCheckBox { color: #E4E4E7; spacing: 6px; font-size: 12px; "
+        "  font-family: 'Segoe UI'; }"
         "QCheckBox::indicator { width: 18px; height: 18px; border-radius: 3px; "
-        "  border: 1px solid #1A1A1A; background: #111111; }"
-        "QCheckBox::indicator:checked { background: #39FF14; border: 1px solid #39FF14; }"
+        "  border: 1px solid #3F3F46; background: #27272A; }"
+        "QCheckBox::indicator:checked { background: #3B82F6; border: 1px solid #3B82F6; }"
     );
     connect(mode_toggle_, &QCheckBox::toggled, this, [this](bool checked) {
         agent_mode_enabled_ = checked;
         // Switch input glow color: Neon Green for Agent, subtle grey for Chat
         if (checked) {
             input_field_->setStyleSheet(
-                "QLineEdit { background: #0A0A0A; border: 2px solid #39FF14; border-radius: 10px; "
-                "  padding: 10px 16px; font-size: 14px; color: #E0E0E0; "
-                "  font-family: 'Inter', 'Segoe UI', sans-serif; }"
-                "QLineEdit:focus { border-color: #39FF14; background: #000000; }"
-                "QLineEdit::placeholder { color: #555555; }");
+                "QLineEdit { background: #18181B; border: 2px solid #3B82F6; border-radius: 12px; "
+                "  padding: 10px 16px; font-size: 14px; color: #E4E4E7; "
+                "  font-family: 'Segoe UI', sans-serif; }"
+                "QLineEdit:focus { border-color: #60A5FA; background: #09090B; }"
+                "QLineEdit::placeholder { color: #71717A; }");
             input_field_->setPlaceholderText("🤖 Agent Mode — I can control your PC...");
         } else {
             input_field_->setStyleSheet(
-                "QLineEdit { background: #111111; border: 2px solid #1A1A1A; border-radius: 10px; "
-                "  padding: 10px 16px; font-size: 14px; color: #E0E0E0; "
-                "  font-family: 'Inter', 'Segoe UI', sans-serif; }"
-                "QLineEdit:focus { border-color: #555555; }"
-                "QLineEdit::placeholder { color: #555555; }");
+                "QLineEdit { background: #27272A; border: 2px solid #3F3F46; border-radius: 12px; "
+                "  padding: 10px 16px; font-size: 14px; color: #E4E4E7; "
+                "  font-family: 'Segoe UI', sans-serif; }"
+                "QLineEdit:focus { border-color: #8B5CF6; }"
+                "QLineEdit::placeholder { color: #71717A; }");
             input_field_->setPlaceholderText("💬 Chat Only — Ask me anything...");
         }
     });
@@ -346,17 +476,17 @@ void VisionAI::setupUI() {
     header->addSpacing(6);
     // ─────────────────────────────
 
-    header->addWidget(cpu_label_);
-    header->addWidget(ram_label_);
     header->addWidget(settings_btn);
     header->addWidget(help_btn);
-    main_layout->addLayout(header);
+    content_layout->addLayout(header);
     
     // ── Chat display (QListView + Custom Delegate) ───────────────
+    LOG_INFO("Trace: setupUI - ChatWidget");
     chat_widget_ = new ChatWidget(this);
-    main_layout->addWidget(chat_widget_, 1);
+    content_layout->addWidget(chat_widget_, 1);
     
     // ── Quick presets ────────────────────────────────────────────
+    LOG_INFO("Trace: setupUI - Presets");
     auto* presets = new QHBoxLayout();
     const std::vector<std::pair<std::string, std::string>> preset_items = {
         {"📸 Screenshot", "take screenshot"},
@@ -368,11 +498,11 @@ void VisionAI::setupUI() {
     for (const auto& [label, cmd] : preset_items) {
         auto* btn = new QPushButton(QString::fromStdString(label));
         btn->setStyleSheet(
-            "QPushButton { background: #111111; border: 1px solid #1A1A1A; border-radius: 8px; "
-            "  padding: 6px 14px; font-size: 11px; color: #E0E0E0; "
-            "  font-family: 'Inter', 'Segoe UI'; }"
-            "QPushButton:hover { background: #1A1A1A; border-color: #39FF14; color: #39FF14; }"
-            "QPushButton:pressed { background: #39FF14; color: #000000; }");
+            "QPushButton { background: #27272A; border: 1px solid #3F3F46; border-radius: 8px; "
+            "  padding: 6px 14px; font-size: 11px; color: #A1A1AA; "
+            "  font-family: 'Segoe UI'; }"
+            "QPushButton:hover { background: #3F3F46; border-color: #8B5CF6; color: #E4E4E7; }"
+            "QPushButton:pressed { background: #3B82F6; color: #FFFFFF; }");
         connect(btn, &QPushButton::clicked, [this, c = cmd]() {
             onPresetClicked(QString::fromStdString(c));
         });
@@ -381,37 +511,45 @@ void VisionAI::setupUI() {
     main_layout->addLayout(presets);
     
     // ── Input area ───────────────────────────────────────────────
+    LOG_INFO("Trace: setupUI - Input Area");
     auto* input_layout = new QHBoxLayout();
+    
+    // Voice Visualizer Orb
+    voice_vis_ = new VoiceVisualizer(this);
+    voice_vis_->setFixedSize(40, 40);
+    voice_vis_->hide(); // Show only when recording
+    input_layout->addWidget(voice_vis_);
     
     input_field_ = new QLineEdit();
     input_field_->setPlaceholderText("💬 Chat Only — Ask me anything...");
     input_field_->setStyleSheet(
-        "QLineEdit { background: #111111; border: 2px solid #1A1A1A; border-radius: 10px; "
-        "  padding: 10px 16px; font-size: 14px; color: #E0E0E0; "
-        "  font-family: 'Inter', 'Segoe UI', sans-serif; }"
-        "QLineEdit:focus { border-color: #555555; }"
-        "QLineEdit::placeholder { color: #555555; }");
+        "QLineEdit { background: #27272A; border: 2px solid #3F3F46; border-radius: 12px; "
+        "  padding: 10px 16px; font-size: 14px; color: #E4E4E7; "
+        "  font-family: 'Segoe UI', sans-serif; }"
+        "QLineEdit:focus { border-color: #8B5CF6; }"
+        "QLineEdit::placeholder { color: #71717A; }");
     connect(input_field_, &QLineEdit::returnPressed, this, &VisionAI::onSendCommand);
 
     auto* send_btn = new QPushButton("▶");
     send_btn->setFixedSize(42, 40);
     send_btn->setStyleSheet(
-        "QPushButton { background: transparent; border: 1px solid #39FF14; border-radius: 10px; "
-        "  font-size: 16px; color: #39FF14; }"
-        "QPushButton:hover { background: #39FF14; color: #000000; }"
-        "QPushButton:pressed { background: #2ECC40; color: #000000; }");
+        "QPushButton { background: #3B82F6; border: none; border-radius: 10px; "
+        "  font-size: 16px; color: #FFFFFF; }"
+        "QPushButton:hover { background: #60A5FA; }"
+        "QPushButton:pressed { background: #2563EB; }");
     connect(send_btn, &QPushButton::clicked, this, &VisionAI::onSendCommand);
 
     input_layout->addWidget(input_field_, 1);
     input_layout->addWidget(send_btn);
-    main_layout->addLayout(input_layout);
+    content_layout->addLayout(input_layout);
 
     // ── Status bar ───────────────────────────────────────────────
+    LOG_INFO("Trace: setupUI - Status Bar");
     status_label_ = new QLabel("● Ready");
     status_label_->setStyleSheet(
-        "color: #39FF14; font-size: 11px; padding: 4px 8px; "
-        "font-family: 'Inter', 'Segoe UI';");
-    main_layout->addWidget(status_label_);
+        "color: #71717A; font-size: 11px; padding: 4px 8px; "
+        "font-family: 'Segoe UI'; background: transparent;");
+    content_layout->addWidget(status_label_);
     
     // ── Keyboard shortcuts ───────────────────────────────────────
     auto* shortcut_clear = new QShortcut(QKeySequence("Ctrl+L"), this);
@@ -419,6 +557,7 @@ void VisionAI::setupUI() {
     
     auto* shortcut_copy = new QShortcut(QKeySequence("Ctrl+Shift+C"), this);
     connect(shortcut_copy, &QShortcut::activated, this, &VisionAI::onCopyLast);
+    LOG_INFO("Trace: setupUI - End");
 }
 
 // ═══════════════════ System Tray ═══════════════════
@@ -496,6 +635,9 @@ void VisionAI::loadModels() {
     connect(voice_manager_.get(), &voice::VoiceManager::speechDetected, this, [this]() {
         updateStatus("🎤 Speech detected...", "#39FF14");
     });
+    
+    // Wire up VoiceVisualizer to live audio RMS
+    connect(voice_manager_.get(), &voice::VoiceManager::audioLevelChanged, voice_vis_, &VoiceVisualizer::onAudioLevelChanged);
     
     connect(voice_manager_.get(), &voice::VoiceManager::error, this, [this](const QString& err) {
         updateStatus("Voice Error: " + err.toStdString(), "#FF4444");
@@ -631,31 +773,7 @@ void VisionAI::loadModels() {
     // This revives the AVX2 SIMD search without loading the heavy LLM.
     vector_memory_->setEmbeddingFn(
         [](const std::string& text) -> std::vector<float> {
-            const int DIM = 128;
-            std::vector<float> vec(DIM, 0.0f);
-            // Character trigram hashing
-            std::string lower = text;
-            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-            for (size_t i = 0; i + 2 < lower.size(); i++) {
-                uint32_t hash = ((uint32_t)(unsigned char)lower[i] * 31u +
-                                 (uint32_t)(unsigned char)lower[i+1]) * 31u +
-                                 (uint32_t)(unsigned char)lower[i+2];
-                vec[hash % DIM] += 1.0f;
-            }
-            // Also hash word-level features
-            std::istringstream iss(lower);
-            std::string word;
-            while (iss >> word) {
-                uint32_t wh = 0;
-                for (char c : word) wh = wh * 37u + (uint32_t)(unsigned char)c;
-                vec[wh % DIM] += 2.0f;  // Words get higher weight
-            }
-            // L2 normalize
-            float norm = 0.0f;
-            for (float v : vec) norm += v * v;
-            norm = std::sqrt(norm);
-            if (norm > 0.0f) for (float& v : vec) v /= norm;
-            return vec;
+            return VectorMemory::generateTrigramEmbedding(text);
         }
     );
     // Load persisted memories
@@ -1456,7 +1574,36 @@ void VisionAI::closeEvent(QCloseEvent* event) {
 
 bool VisionAI::nativeEvent(const QByteArray& eventType, void* message, qintptr* result) {
     MSG* msg = static_cast<MSG*>(message);
-    if (msg->message == WM_HOTKEY) {
+    
+    // Handle Custom Frameless Window Resizing and Dragging
+    if (msg->message == WM_NCHITTEST) {
+        QPoint globalPos(GET_X_LPARAM(msg->lParam), GET_Y_LPARAM(msg->lParam));
+        QPoint localPos = mapFromGlobal(globalPos);
+
+        int border = 8;
+        bool left = localPos.x() < border;
+        bool right = localPos.x() > width() - border;
+        bool top = localPos.y() < border;
+        bool bottom = localPos.y() > height() - border;
+
+        if (top && left) { *result = HTTOPLEFT; return true; }
+        if (top && right) { *result = HTTOPRIGHT; return true; }
+        if (bottom && left) { *result = HTBOTTOMLEFT; return true; }
+        if (bottom && right) { *result = HTBOTTOMRIGHT; return true; }
+        if (left) { *result = HTLEFT; return true; }
+        if (right) { *result = HTRIGHT; return true; }
+        if (bottom) { *result = HTBOTTOM; return true; }
+        if (top) { *result = HTTOP; return true; }
+
+        QWidget* child = childAt(localPos);
+        // If clicking on custom title bar background or title labels
+        if (localPos.y() < 40 && (!child || child->objectName() == "titleBar" || child->inherits("QLabel"))) {
+            *result = HTCAPTION;
+            return true;
+        }
+    }
+    // Handle Hotkeys
+    else if (msg->message == WM_HOTKEY) {
         if (msg->wParam == (WPARAM)hotkey_id_) {
 #ifdef VISION_HAS_WHISPER
             if (voice_manager_ && voice_manager_->isListening()) stopAndProcess();
@@ -1501,6 +1648,9 @@ void VisionAI::startRecording() {
         "padding: 8px 14px; font-size: 14px; color: white;");
     input_field_->setPlaceholderText("🎤 Listening... Press Ctrl+Alt+Space to stop");
     input_field_->clear();
+    
+    if (voice_vis_) voice_vis_->show();
+
     if (tray_icon_) tray_icon_->setToolTip("VISION AI — 🎤 Listening...");
     updateStatus("🎤 Listening... (Ctrl+Alt+Space to stop)", "#FF4444");
 #endif
@@ -1516,6 +1666,9 @@ void VisionAI::stopAndProcess() {
         "background: #2a2a2a; border: 1px solid #555; border-radius: 8px; "
         "padding: 8px 14px; font-size: 14px; color: white;");
     input_field_->setPlaceholderText("Type a command... (Enter to send, Ctrl+Alt+Space for voice)");
+    
+    if (voice_vis_) voice_vis_->hide();
+
     if (tray_icon_) tray_icon_->setToolTip("VISION AI — Ready");
     updateStatus("🧠 Processing voice (final pass)...", "#FFD700");
 

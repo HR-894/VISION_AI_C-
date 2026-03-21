@@ -1,7 +1,7 @@
 #pragma once
 /**
  * @file chat_widget.h
- * @brief Discord-tier chat UI — QListView + Custom Delegate
+ * @brief Modern conversational chat UI — QListView + Custom Delegate
  *
  * Replaces QTextEdit with a proper MVC chat widget:
  * - ChatMessage: Data struct
@@ -19,6 +19,8 @@
 #include <QString>
 #include <QDateTime>
 #include <vector>
+#include <QVariantAnimation>
+#include <QEasingCurve>
 
 namespace vision {
 
@@ -77,7 +79,10 @@ public:
                const QModelIndex& index) const override;
 
     QSize sizeHint(const QStyleOptionViewItem& option,
-                   const QModelIndex& index) const override;
+                   const QModelIndex& index) const override;                   
+
+    /// Trigger animation for a newly added message (Req 2)
+    void triggerNewMessageAnimation(int row);
 
     /// Handle click on copy button (coordinate geometry check)
     bool editorEvent(QEvent* event, QAbstractItemModel* model,
@@ -85,26 +90,32 @@ public:
                      const QModelIndex& index) override;
 
 private:
-    // Layout constants
-    static constexpr int kBubblePadding = 14;
-    static constexpr int kBubbleMarginH = 16;
-    static constexpr int kBubbleMarginV = 4;
-    static constexpr int kAccentBarWidth = 3;
-    static constexpr int kSenderHeight = 20;
-    static constexpr int kTimestampWidth = 50;
-    static constexpr int kBubbleRadius = 10;
-    static constexpr int kCopyBtnSize = 22;       // Copy button hit area
-    static constexpr double kMaxBubbleRatio = 0.78;
+    QVariantAnimation* add_anim_{nullptr};
+    int animating_row_{-1};
 
-    // Colors — Hacker Theme (Matrix Black + Neon Green)
-    QColor bgAI_      = QColor(17, 17, 17);    // #111111
-    QColor bgUser_    = QColor(26, 26, 26);    // #1A1A1A
-    QColor bgSystem_  = QColor(10, 10, 10);    // #0A0A0A
-    QColor accentAI_  = QColor(57, 255, 20);   // #39FF14 Neon Green
-    QColor accentUser_= QColor(0, 200, 255);   // #00C8FF Cyberpunk Cyan
-    QColor textColor_ = QColor(224, 224, 224); // #E0E0E0
-    QColor dimText_   = QColor(85, 85, 85);    // #555555
-    QColor hoverBg_   = QColor(26, 26, 26);    // #1A1A1A
+    // Layout constants — Premium Modern Chat
+    static constexpr int kBubblePadding = 16;
+    static constexpr int kBubbleMarginH = 20;
+    static constexpr int kBubbleMarginV = 3;
+    static constexpr int kAccentBarWidth = 0;       // No accent bar — clean bubbles
+    static constexpr int kSenderHeight = 22;
+    static constexpr int kTimestampWidth = 50;
+    static constexpr int kBubbleRadius = 18;
+    static constexpr int kCopyBtnSize = 22;
+    static constexpr double kMaxBubbleRatio = 0.82;
+
+    // Colors — Premium Deep Dark + Vibrant Blue Accent
+    QColor bgAI_      = QColor(39, 39, 42);     // #27272A  Zinc-800
+    QColor bgUser_    = QColor(59, 130, 246);    // #3B82F6  Vivid Blue
+    QColor bgSystem_  = QColor(24, 24, 27);      // #18181B  Zinc-900
+    QColor accentAI_  = QColor(139, 92, 246);    // #8B5CF6  Violet
+    QColor accentUser_= QColor(59, 130, 246);    // #3B82F6  Blue
+    QColor textColor_ = QColor(228, 228, 231);   // #E4E4E7  Zinc-200
+    QColor textUser_  = QColor(255, 255, 255);   // #FFFFFF  White on blue
+    QColor dimText_   = QColor(113, 113, 122);   // #71717A  Zinc-500
+    QColor hoverBg_   = QColor(50, 50, 56);      // #323238  Hover glow
+    QColor senderAI_  = QColor(167, 139, 250);   // #A78BFA  Violet-400
+    QColor senderUser_= QColor(191, 219, 254);   // #BFDBFE  Blue-200
 
     // Helpers
     QFont senderFont() const;
@@ -113,7 +124,7 @@ private:
     int bubbleTextWidth(const QStyleOptionViewItem& option) const;
     int calcTextHeight(const QString& text, int width) const;
 
-    /// Shared geometry for copy button — used by BOTH paint() and editorEvent()
+    /// Shared geometry for copy button
     QRect getCopyButtonRect(const QRect& bubbleRect) const;
 };
 

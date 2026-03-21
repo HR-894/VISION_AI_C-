@@ -109,11 +109,12 @@ struct UIAutomation::Impl {
 
     /// Extract a BSTR to std::string
     static std::string bstrToString(BSTR bstr) {
-        if (!bstr) return "";
         int len = WideCharToMultiByte(CP_UTF8, 0, bstr, -1, nullptr, 0, nullptr, nullptr);
         if (len <= 0) return "";
-        std::string result(len - 1, '\0');
+        // PRD Fix 4: Allocate full space including null-terminator to prevent heap overrun
+        std::string result(len, '\0');
         WideCharToMultiByte(CP_UTF8, 0, bstr, -1, result.data(), len, nullptr, nullptr);
+        if (!result.empty() && result.back() == '\0') result.pop_back();
         return result;
     }
 
@@ -288,8 +289,12 @@ json UIAutomation::getAccessibilityTree(int max_depth) {
     wchar_t title[512];
     GetWindowTextW(fg, title, 512);
     int title_len = WideCharToMultiByte(CP_UTF8, 0, title, -1, nullptr, 0, nullptr, nullptr);
-    std::string window_title(title_len > 0 ? title_len - 1 : 0, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, title, -1, window_title.data(), title_len, nullptr, nullptr);
+    // PRD Fix 4: Allocate full space including null-terminator to prevent heap overrun
+    std::string window_title(title_len > 0 ? title_len : 0, '\0');
+    if (title_len > 0) {
+        WideCharToMultiByte(CP_UTF8, 0, title, -1, window_title.data(), title_len, nullptr, nullptr);
+        if (!window_title.empty() && window_title.back() == '\0') window_title.pop_back();
+    }
 
     IUIAutomationElement* root = nullptr;
     HRESULT hr = impl_->automation->ElementFromHandle(fg, &root);

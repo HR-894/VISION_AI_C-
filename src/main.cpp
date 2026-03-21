@@ -20,12 +20,14 @@
 #include <windows.h>
 #include <filesystem>
 
-static void setupLogging() {
+static void setupLogging(const std::string& appDirPath) {
 #ifdef VISION_HAS_SPDLOG
     try {
         auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+        
+        std::string logPath = appDirPath + "/data/vision_ai.log";
         auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-            "data/vision_ai.log", 1024 * 1024 * 5, 3);
+            logPath, 1024 * 1024 * 5, 3);
         
         auto logger = std::make_shared<spdlog::logger>(
             "VISION_AI",
@@ -102,9 +104,10 @@ int WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/,
     )");
     
     // Ensure data directory exists (for logs, config, etc.)
-    std::filesystem::create_directories("data");
+    QString dataDirPath = QCoreApplication::applicationDirPath() + "/data";
+    std::filesystem::create_directories(dataDirPath.toStdString());
     
-    setupLogging();
+    setupLogging(QCoreApplication::applicationDirPath().toStdString());
 
     // ── GPU Setup Wizard (first-run only) ──────────────────────
     vision::GpuConfig gpu_cfg = vision::runGpuSetupIfNeeded(nullptr);

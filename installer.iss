@@ -1,26 +1,27 @@
 ; ═══════════════════════════════════════════════════════════════════
-; VISION AI - InnoSetup Installer Script
+; VISION AI - InnoSetup Installer Script (Phase 8)
 ; ═══════════════════════════════════════════════════════════════════
 ;
 ; Key Design Decisions:
 ;   ✅ Installs to AppData\Local (no UAC prompt, silent updates)
 ;   ✅ Binaries only (~30-40MB) — models download on first run
 ;   ✅ Start Menu + Desktop shortcuts
-;   ✅ Proper uninstaller
+;   ✅ Proper uninstaller with selective cleanup
 ;   ✅ Visual Studio C++ Runtime bundled
 ;   ✅ Single-user install (no admin required)
+;   ✅ Persistent data/ directory for user memory & vector store
 ;
 ; Build: ISCC.exe installer.iss
 ; ═══════════════════════════════════════════════════════════════════
 
 #define MyAppName "VISION AI"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "3.0.0"
 #define MyAppPublisher "HR-894"
 #define MyAppURL "https://github.com/HR-894/VISION_AI_C-"
 #define MyAppExeName "VISION_AI.exe"
 #define MyAppIcon "assets\icon.png"
 
-; Source directory (populated by deploy_release.ps1)
+; Source directory (populated by CMake build + windeployqt)
 #define SourceDir "build\bin\Release"
 
 [Setup]
@@ -35,9 +36,9 @@ AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
 
 ; ─── THE MAGIC DIRECTIVES ───
-; No admin prompt — install to user's AppData\Local
+; No admin prompt — install to user's AppData\Local\Programs
 PrivilegesRequired=lowest
-DefaultDirName={localappdata}\Vision_AI
+DefaultDirName={localappdata}\Programs\VisionAI
 
 ; Start Menu
 DefaultGroupName={#MyAppName}
@@ -74,39 +75,66 @@ DisableDirPage=yes
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-; ─── BINARIES ONLY ───
-; Main executable
+; ─── MAIN EXECUTABLE ───
 Source: "{#SourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
-; Qt6 DLLs (deployed by windeployqt)
+; ─── Qt6 DLLs (deployed by windeployqt) ───
 Source: "{#SourceDir}\Qt6Core.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\Qt6Gui.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\Qt6Widgets.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\Qt6Network.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\Qt6Concurrent.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
-; Qt plugins (windeployqt output)
+; ─── Qt plugins (windeployqt output) ───
 Source: "{#SourceDir}\platforms\*"; DestDir: "{app}\platforms"; Flags: ignoreversion recursesubdirs
-Source: "{#SourceDir}\styles\*"; DestDir: "{app}\styles"; Flags: ignoreversion recursesubdirs
-Source: "{#SourceDir}\imageformats\*"; DestDir: "{app}\imageformats"; Flags: ignoreversion recursesubdirs
-Source: "{#SourceDir}\tls\*"; DestDir: "{app}\tls"; Flags: ignoreversion recursesubdirs; Check: DirExists(ExpandConstant('{#SourceDir}\tls'))
+Source: "{#SourceDir}\styles\*"; DestDir: "{app}\styles"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+Source: "{#SourceDir}\imageformats\*"; DestDir: "{app}\imageformats"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+Source: "{#SourceDir}\tls\*"; DestDir: "{app}\tls"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+Source: "{#SourceDir}\networkinformation\*"; DestDir: "{app}\networkinformation"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 
-; Third-party DLLs (curl, llama, spdlog etc.)
-Source: "{#SourceDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+; ─── Third-party DLLs (llama, whisper, portaudio, curl, spdlog) ───
+Source: "{#SourceDir}\llama.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\ggml.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\ggml-base.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\ggml-cpu.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\ggml-cuda.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\ggml-vulkan.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\whisper.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\portaudio*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\libcurl*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\spdlog*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
-; Visual C++ Runtime (if bundled by windeployqt --compiler-runtime)
+; OpenCV DLLs
+Source: "{#SourceDir}\opencv_core*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\opencv_imgproc*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\opencv_highgui*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+
+; Tesseract DLLs
+Source: "{#SourceDir}\tesseract*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\leptonica*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+
+; Catch-all for any remaining DLLs (zlib, ssl, etc.)
+Source: "{#SourceDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+
+; ─── Visual C++ Runtime ───
 Source: "{#SourceDir}\vc_redist*.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall skipifsourcedoesntexist
 
-; Data directory (empty — models download on first run)
-Source: "{#SourceDir}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; ─── Persistent data directory (empty — user memory created at runtime) ───
+Source: "{#SourceDir}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist onlyifdoesntexist
 
-; Tesseract trained data (small, ~4MB)
+; ─── Tesseract trained data ───
 Source: "{#SourceDir}\tessdata\*"; DestDir: "{app}\tessdata"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 
 ; ─── EXPLICITLY EXCLUDED (models, GGUF, whisper) ───
 ; These are NOT included — ModelDownloaderWizard handles them on first run
+
+[Dirs]
+; Create data directory on install (persists across updates)
+Name: "{app}\data"; Flags: uninsneveruninstall
+Name: "{app}\data\memory"; Flags: uninsneveruninstall
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -121,6 +149,7 @@ Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; S
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Clean up user data on uninstall (optional — keep models)
-Type: filesandirs; Name: "{app}\data"
+; Clean up logs and cache on uninstall (preserve user data/memory)
 Type: filesandirs; Name: "{app}\logs"
+Type: filesandirs; Name: "{app}\cache"
+; NOTE: {app}\data is NOT deleted (uninsneveruninstall flag) to preserve user's vector memory

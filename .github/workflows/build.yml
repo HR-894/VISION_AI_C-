@@ -1,0 +1,56 @@
+name: Windows CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Setup Qt 6
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: '6.5.0'
+        arch: 'win64_msvc2019_64'
+        modules: 'qtwebview qtwebengine'
+
+    - name: Configure CMake
+      run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DVISION_BUILD_TESTS=ON -DVISION_ENABLE_LLM=ON -DVISION_ENABLE_OCR=OFF -DVISION_ENABLE_WHISPER=OFF -DVISION_ENABLE_CLOUD=OFF -DVISION_ENABLE_AUDIO=OFF
+
+    - name: Build
+      run: cmake --build build --config Release --parallel 4
+
+    - name: Run Unit Tests
+      working-directory: build/tests
+      run: ctest -C Release --output-on-failure
+
+    - name: Package with windeployqt
+      working-directory: build/bin/Release
+      run: windeployqt --no-translations VISION_AI.exe
+
+    # Skip InnoSetup for PRs, only for releases or main pushes
+    - name: Download InnoSetup (for Installer)
+      if: github.event_name == 'release' || github.event_name == 'push'
+      run: choco install innosetup
+
+    - name: Build Windows Installer
+      if: github.event_name == 'release' || github.event_name == 'push'
+      run: iscc installer.iss
+
+    - name: Upload Installer Artifact
+      if: github.event_name == 'release' || github.event_name == 'push'
+      uses: actions/upload-artifact@v3
+      with:
+        name: VisionAI-Installer
+        path: Output/VisionAI_Setup.exe

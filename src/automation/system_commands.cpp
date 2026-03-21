@@ -597,17 +597,24 @@ void SystemCommands::openSettingsPage(const std::string& page) {
     ShellExecuteW(nullptr, L"open", uri.c_str(), nullptr, nullptr, SW_SHOW);
 }
 
+// Helper to prevent PATH hijacking for system apps
+static std::wstring resolveSystemApp(const std::wstring& exe) {
+    wchar_t sysDir[MAX_PATH];
+    GetSystemDirectoryW(sysDir, MAX_PATH);
+    return std::wstring(sysDir) + L"\\" + exe;
+}
+
 void SystemCommands::openTaskManager() {
-    ShellExecuteW(nullptr, L"open", L"taskmgr.exe", nullptr, nullptr, SW_SHOW);
+    ShellExecuteW(nullptr, L"open", resolveSystemApp(L"taskmgr.exe").c_str(), nullptr, nullptr, SW_SHOW);
 }
 void SystemCommands::openDeviceManager() {
-    ShellExecuteW(nullptr, L"open", L"devmgmt.msc", nullptr, nullptr, SW_SHOW);
+    ShellExecuteW(nullptr, L"open", resolveSystemApp(L"devmgmt.msc").c_str(), nullptr, nullptr, SW_SHOW);
 }
 void SystemCommands::openDiskCleanup() {
-    ShellExecuteW(nullptr, L"open", L"cleanmgr.exe", nullptr, nullptr, SW_SHOW);
+    ShellExecuteW(nullptr, L"open", resolveSystemApp(L"cleanmgr.exe").c_str(), nullptr, nullptr, SW_SHOW);
 }
 void SystemCommands::openControlPanel() {
-    ShellExecuteW(nullptr, L"open", L"control", nullptr, nullptr, SW_SHOW);
+    ShellExecuteW(nullptr, L"open", resolveSystemApp(L"control.exe").c_str(), nullptr, nullptr, SW_SHOW);
 }
 
 // ═══════════════════ Timers & Stopwatch ═══════════════════

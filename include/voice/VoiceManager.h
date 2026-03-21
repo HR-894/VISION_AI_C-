@@ -64,6 +64,10 @@ public:
     // Abort everything and return to idle
     void abortListening();
 
+    // === Wake Word ===
+    void startWakeWordListener();
+    void stopWakeWordListener();
+
     // === State ===
     [[nodiscard]] VoiceState state() const noexcept;
     [[nodiscard]] bool isListening() const noexcept;
@@ -113,6 +117,7 @@ private slots:
 private:
     void setState(VoiceState newState);
     void runFinalPass();
+    void wakeWordLoop();
 
     // === Components ===
     std::unique_ptr<AudioCapture>   m_audioCapture;
@@ -122,6 +127,10 @@ private:
     std::atomic<VoiceState>         m_state{VoiceState::Idle};
     std::string                     m_accumulatedPartialText;
     bool                            m_initialized = false;
+    
+    // === Wake Word ===
+    std::atomic<bool>               m_wakeWordRunning{false};
+    std::unique_ptr<std::thread>    m_wakeWordThread;
 };
 
 } // namespace vision::voice

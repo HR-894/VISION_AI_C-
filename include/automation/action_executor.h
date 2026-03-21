@@ -4,7 +4,8 @@
  * @brief Multi-step action executor with visual grounding (OCR + template matching)
  * 
  * Executes action plans from the ReAct agent. Supports OCR text finding
- * (Tesseract), screen reading, and a comprehensive action dispatcher map.
+ * (Tesseract), screen reading, a comprehensive action dispatcher map,
+ * and dynamic plugin loading from DLLs.
  */
 
 #include <string>
@@ -15,6 +16,7 @@
 #include <functional>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <memory>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -28,6 +30,7 @@
 namespace vision {
 
 class VisionAI; // Forward declaration
+class PluginLoader;  // Forward declaration
 
 /// OCR result structure
 struct OCRResult {
@@ -77,9 +80,20 @@ public:
         const nlohmann::json& params)>;
     void registerAction(const std::string& name, ActionHandler handler);
 
+    // ── Plugin system ────────────────────────────────────────────
+    /// Load plugins from a directory (called once at startup)
+    int loadPlugins(const std::string& directory);
+
+    /// Get all tool manifests from loaded plugins, optionally filtered
+    std::vector<nlohmann::json> getPluginManifests(const std::string& category = "") const;
+
+    /// Get all built-in action names (for swarm routing)
+    std::vector<std::string> getBuiltinActionNames() const;
+
 private:
     VisionAI& app_;
     std::unordered_map<std::string, ActionHandler> action_map_;
+    std::unique_ptr<PluginLoader> plugin_loader_;
 
     // ── Screen capture ───────────────────────────────────────────
 #ifdef VISION_HAS_OCR
@@ -127,6 +141,13 @@ private:
     std::pair<bool, std::string> actionRunPowerShell(const nlohmann::json& params);
     std::pair<bool, std::string> actionTaskComplete(const nlohmann::json& params);
     std::pair<bool, std::string> actionGetUITree(const nlohmann::json& params);
+
+    // ── Document RAG (Phase 10) ──────────────────────────────────
+    std::pair<bool, std::string> actionQueryDocuments(const nlohmann::json& params);
+    std::pair<bool, std::string> actionIngestDocument(const nlohmann::json& params);
+    
+    // ── OS Semantic Timeline (Phase 11) ──────────────────────────
+    std::pair<bool, std::string> actionSearchTimeline(const nlohmann::json& params);
 };
 
 } // namespace vision

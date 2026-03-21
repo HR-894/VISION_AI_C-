@@ -218,6 +218,24 @@ std::string LLMController::tryFailover(const std::string& prompt) {
     return result;
 }
 
+// ═══════════════════ Vision (Multimodal) ══════════════════════════
+
+std::string LLMController::generateVisionResponse(const std::string& prompt,
+                                                    const std::vector<uint8_t>& image_bytes,
+                                                    StreamCallback stream_cb) {
+    std::lock_guard<std::recursive_mutex> lock(llm_mutex_);
+    if (!active_backend_) return "";
+
+    if (!active_backend_->isReady() && !active_backend_->initialize()) {
+        LOG_ERROR("LLMController: Failed to initialize backend for vision");
+        return "";
+    }
+
+    return active_backend_->generateVision(prompt, image_bytes, conversation_, stream_cb);
+}
+
+// ═══════════════════ ReAct Wrapper ═══════════════════════════════
+
 std::string LLMController::generateReactResponse(const std::string& prompt, StreamCallback stream_cb) {
     return generateResponse(prompt, stream_cb);
 }

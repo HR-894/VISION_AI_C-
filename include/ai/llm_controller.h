@@ -95,6 +95,9 @@ public:
     /// Generate a single text response (main inference entry point)
     std::string generateResponse(const std::string& prompt, StreamCallback stream_cb = nullptr);
 
+    /// Generate a multimodal response (text + image)
+    std::string generateVisionResponse(const std::string& prompt, const std::vector<uint8_t>& image_bytes, StreamCallback stream_cb = nullptr);
+
     // ── Emergency Stop ──────────────────────────────────────────
     /// Cancel any ongoing generation immediately
     void cancelGeneration();

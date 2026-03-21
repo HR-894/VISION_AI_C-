@@ -112,13 +112,11 @@ SettingsDialog::~SettingsDialog() {
     // Secure wipe: clear the QLineEdit first (removes from Qt internals),
     // then volatile-overwrite our local copy of the key.
     if (api_key_edit_) {
-        QString text = api_key_edit_->text();
-        api_key_edit_->clear();  // Removes key from QLineEdit's internal buffer
-        if (!text.isEmpty()) {
-            auto data = text.toUtf8();
-            SecureZeroMemory(data.data(), data.size());
-            // PRD Fix 6: Cast away const to forcefully wipe Qt's implicitly shared internal 16-bit buffer
-            SecureZeroMemory(const_cast<ushort*>(text.utf16()), text.length() * sizeof(ushort));
+        // Extract to std::string before DPAPI/wiping to avoid modifying Qt's implicit memory
+        std::string plaintext_key = api_key_edit_->text().toStdString();
+        api_key_edit_->clear();  // Removes key from QLineEdit's internal string safely
+        if (!plaintext_key.empty()) {
+            SecureZeroMemory(plaintext_key.data(), plaintext_key.size());
         }
     }
 }
@@ -422,28 +420,14 @@ void SettingsDialog::onSave() {
         
         // PRD Fix 6: Secure memory wipe immediately after DPAPI handoff
         SecureZeroMemory(plaintext_key.data(), plaintext_key.size());
-        auto raw_utf8 = key_text.toUtf8();
-        SecureZeroMemory(raw_utf8.data(), raw_utf8.size());
-        SecureZeroMemory(const_cast<ushort*>(key_text.utf16()), key_text.length() * sizeof(ushort));
         
-        api_key_edit_->clear(); // Clear from view instantly
+        // Clear from view instantly
+        api_key_edit_->clear();
         
         if (!encrypted.empty()) {
             config_.set("cloud_api_key_encrypted", encrypted);
             LOG_INFO("Settings: API key saved (DPAPI encrypted, {} bytes)", encrypted.size());
-            // Safe to emit since this relies on string copying, wait, emit before wiping?
-            // Actually, we should emit the wiped key? No, CloudBackend needs the key text.
-            // Oh, we wiped `key_text`! So emit will pass empty key to CloudBackend!
-            // Wait, CloudBackend can decrypt it from the config manager instead, or we emit `plaintext_key` BEFORE wiping?
-            // It's safer to just emit a signal that it changed and let CloudBackend read it.
-            // Or we just don't wipe it until AFTER the emit.
-            // Actually, emit the signal, then wipe.
         }
-    }
-    
-    // Wipe key_text just in case it wasn't wiped inside the block
-    if (!key_text.isEmpty()) {
-        SecureZeroMemory(const_cast<ushort*>(key_text.utf16()), key_text.length() * sizeof(ushort));
     }
 
     // Cloud model

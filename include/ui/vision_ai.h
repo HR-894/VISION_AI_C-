@@ -41,9 +41,12 @@
 #include "fast_complex_handler.h"
 #include "command_router.h"
 #include "chat_widget.h"
+#include "voice_visualizer.h"
 #include "screen_observer.h"
 #include "vector_memory.h"
 #include "confidence_scorer.h"
+#include "update_manager.h"
+#include "timeline_logger.h"
 
 #ifdef VISION_HAS_WHISPER
 #include "voice/VoiceManager.h"
@@ -86,6 +89,9 @@ public:
     ReActAgent& agent() { return *react_agent_; }
     ActionExecutor& executor() { return *action_executor_; }
 #endif
+    VectorMemory& vectorMemory() { return *vector_memory_; }
+    TimelineLogger& timeline() { return *timeline_logger_; }
+    
 #ifdef VISION_HAS_WHISPER
     voice::VoiceManager& voice() { return *voice_manager_; }
 #endif
@@ -161,12 +167,19 @@ private:
     // Vector Memory (Flat Search + AVX2)
     std::unique_ptr<VectorMemory> vector_memory_;
 
+    // OS Semantic Timeline (Recall)
+    std::unique_ptr<TimelineLogger> timeline_logger_;
+
     // Confidence Scorer + HITL State Machine
     std::unique_ptr<ConfidenceScorer> confidence_scorer_;
     QTimer* hitl_timeout_timer_ = nullptr;  // 60s ghost state prevention
 
+    // OTA Update Manager (Phase 9)
+    std::unique_ptr<UpdateManager> update_manager_;
+
     // ── UI Widgets ───────────────────────────────────────────────
     ChatWidget* chat_widget_ = nullptr;
+    VoiceVisualizer* voice_vis_ = nullptr;
     QLineEdit* input_field_ = nullptr;
     QLabel* status_label_{nullptr};
     QLabel* raw_status_label_{nullptr};

@@ -80,6 +80,9 @@ private:
     CURL* curl_ = nullptr;
 #endif
 
+    std::string sse_buffer_;
+    StreamCallback active_stream_cb_ = nullptr;
+
     std::string api_key_;
     std::string model_;
     std::string endpoint_ = "https://api.groq.com/openai/v1/chat/completions";

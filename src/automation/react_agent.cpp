@@ -11,6 +11,7 @@
 #include <sstream>
 #include <thread>
 #include <chrono>
+#include <unordered_set>
 
 #ifdef VISION_HAS_SPDLOG
 #include <spdlog/spdlog.h>
@@ -189,8 +190,46 @@ json ReActAgent::observe() {
 }
 
 std::optional<json> ReActAgent::think(const std::string& cmd, const json& ctx, StreamCallback stream_cb) {
-    // Smart dual-mode prompt: AI Agent + Chat (inspired by HR-AI-MIND)
-    // The AI decides whether to execute an OS action or reply naturally.
+    // ── Phase 8: Swarm Router — classify intent and filter tools ──
+    std::string agent_category = classifyIntent(cmd);
+    LOG_INFO("Swarm Router: classified intent as '{}'", agent_category);
+
+    // Build filtered action list based on category
+    static const std::unordered_map<std::string, std::vector<std::string>> CATEGORY_ACTIONS = {
+        {"os", {"open_app", "set_volume", "set_brightness", "minimize", "maximize",
+                "close_window", "focus_window", "screenshot", "press_key", "type_text",
+                "click_element", "scroll", "get_ui_tree", "run_powershell", "task_complete", "chat",
+                "query_documents", "ingest_document", "search_timeline"}},
+        {"web", {"open_url", "search_web", "search_in_browser", "open_app", "task_complete", "chat"}},
+        {"file", {"list_files", "move_file", "copy_file", "delete_file", "run_powershell",
+                  "clipboard_get", "clipboard_set", "task_complete", "chat", "query_documents", "ingest_document"}},
+        {"media", {"set_volume", "open_app", "task_complete", "chat"}},
+        {"chat", {"chat", "task_complete", "query_documents", "search_timeline"}}
+    };
+
+    // Gather the filtered action names for this agent
+    std::string available_actions;
+    auto cat_it = CATEGORY_ACTIONS.find(agent_category);
+    if (cat_it != CATEGORY_ACTIONS.end()) {
+        for (const auto& a : cat_it->second) {
+            if (!available_actions.empty()) available_actions += ", ";
+            available_actions += a;
+        }
+        // Append plugin tools for this category
+        auto plugin_manifests = executor_.getPluginManifests(agent_category);
+        for (const auto& pm : plugin_manifests) {
+            available_actions += ", " + pm.value("name", "");
+        }
+    } else {
+        // Fallback: all built-in + all plugins
+        available_actions = "open_app, open_url, search_web, type_text, press_key, "
+            "click_element, scroll, set_volume, set_brightness, minimize, maximize, "
+            "close_window, focus_window, screenshot, list_files, move_file, copy_file, "
+            "delete_file, clipboard_get, clipboard_set, get_ui_tree, task_complete, "
+            "run_powershell, query_documents, ingest_document, search_timeline";
+    }
+
+    // Smart dual-mode prompt with dynamically filtered tools
     std::string smart_prompt =
         "You are VISION AI, a smart and friendly Windows desktop assistant. "
         "You understand English, Hindi, and Hinglish — always match the user's language. "
@@ -199,11 +238,7 @@ std::optional<json> ReActAgent::think(const std::string& cmd, const json& ctx, S
         "  Output: {\"action\": \"<action_name>\", \"params\": {<relevant_params>}}\n"
         "MODE 2 — CHAT: For greetings, questions, conversations, explanations, or when you cannot perform a task.\n"
         "  Output: {\"action\": \"chat\", \"params\": {\"message\": \"your natural reply\"}}\n\n"
-        "Available OS actions: open_app, open_url, search_web, type_text, press_key, "
-        "click_element, scroll, set_volume, set_brightness, minimize, maximize, "
-        "close_window, focus_window, screenshot, list_files, move_file, copy_file, "
-        "delete_file, clipboard_get, clipboard_set, get_ui_tree, task_complete, "
-        "run_powershell.\n\n"
+        "[AGENT: " + agent_category + "] Available actions: " + available_actions + ".\n\n"
         "CRITICAL FOR COMPLEX WORKFLOWS:\n"
         "- If asked to do complex data processing (like 'search top 20 billionaires and write to excel' or 'organize downloads'), "
         "DO NOT use simple macros. Instead, use 'run_powershell' to write a script that does the entire job seamlessly.\n"
@@ -319,6 +354,61 @@ void ReActAgent::summarizeHistory() {
         }
     }
     LOG_INFO("ReAct history summarized: {} steps compressed", to_summarize);
+}
+
+// ── Phase 8: Swarm Router — lightweight intent classifier ──────────
+std::string ReActAgent::classifyIntent(const std::string& cmd) const {
+    std::string lower = cmd;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+    // Web-related keywords
+    static const std::vector<std::string> web_keys = {
+        "search", "google", "browse", "website", "url", "http",
+        "download page", "open site", "web"
+    };
+    for (const auto& k : web_keys) {
+        if (lower.find(k) != std::string::npos) return "web";
+    }
+
+    // File/Document-related keywords
+    static const std::vector<std::string> file_keys = {
+        "file", "folder", "directory", "move", "copy", "delete",
+        "rename", "list", "downloads", "desktop", "documents",
+        "organize", "sort", "clean up", "document", "pdf", "txt", "read", "summarize", "ingest"
+    };
+    for (const auto& k : file_keys) {
+        if (lower.find(k) != std::string::npos) return "file";
+    }
+
+    // Media-related keywords
+    static const std::vector<std::string> media_keys = {
+        "play", "pause", "next track", "previous track", "spotify",
+        "music", "song", "volume", "mute", "unmute", "media"
+    };
+    for (const auto& k : media_keys) {
+        if (lower.find(k) != std::string::npos) return "media";
+    }
+
+    // Chat-like patterns (greetings, questions, etc.)
+    static const std::vector<std::string> chat_keys = {
+        "hello", "hi ", "hey ", "how are", "what is", "who is",
+        "tell me", "explain", "thanks", "thank you", "good morning",
+        "good night", "joke", "story"
+    };
+    for (const auto& k : chat_keys) {
+        if (lower.find(k) != std::string::npos) return "chat";
+    }
+
+    // OS Timeline-related keywords 
+    static const std::vector<std::string> timeline_keys = {
+        "recent", "timeline", "earlier", "doing", "working on", "history", "recall"
+    };
+    for (const auto& k : timeline_keys) {
+        if (lower.find(k) != std::string::npos) return "os";
+    }
+
+    // Default: OS agent (most versatile)
+    return "os";
 }
 
 } // namespace vision

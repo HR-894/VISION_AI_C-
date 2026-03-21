@@ -11,6 +11,7 @@
 #include <sstream>
 #include <fstream>
 #include <filesystem>
+#include "plugin_loader.h"
 
 #ifdef VISION_HAS_OCR
 #include <opencv2/imgproc.hpp>
@@ -43,6 +44,7 @@ static UIAutomation getUIAuto() {
 
 ActionExecutor::ActionExecutor(VisionAI& app) : app_(app) {
     initActionMap();
+    plugin_loader_ = std::make_unique<PluginLoader>();
 #ifdef VISION_HAS_OCR
     initOCR();  // FIX B1: Init Tesseract ONCE (not per-call)
 #endif
@@ -52,6 +54,35 @@ ActionExecutor::~ActionExecutor() {
 #ifdef VISION_HAS_OCR
     shutdownOCR();
 #endif
+    // Plugin loader cleaned up by unique_ptr
+}
+
+int ActionExecutor::loadPlugins(const std::string& directory) {
+    if (!plugin_loader_) return 0;
+    return plugin_loader_->loadFromDirectory(directory);
+}
+
+std::vector<json> ActionExecutor::getPluginManifests(const std::string& category) const {
+    std::vector<json> result;
+    if (!plugin_loader_) return result;
+    for (const auto& m : plugin_loader_->getAllManifests(category)) {
+        result.push_back({
+            {"name", m.name},
+            {"description", m.description},
+            {"category", m.category},
+            {"parameters", m.param_schema}
+        });
+    }
+    return result;
+}
+
+std::vector<std::string> ActionExecutor::getBuiltinActionNames() const {
+    std::vector<std::string> names;
+    names.reserve(action_map_.size());
+    for (const auto& [k, _] : action_map_) {
+        names.push_back(k);
+    }
+    return names;
 }
 
 bool ActionExecutor::isOCRAvailable() {
@@ -89,6 +120,13 @@ void ActionExecutor::initActionMap() {
     registerAction("run_powershell", [this](const json& p) { return actionRunPowerShell(p); });
     registerAction("task_complete", [this](const json& p) { return actionTaskComplete(p); });
     registerAction("get_ui_tree", [this](const json& p) { return actionGetUITree(p); });
+    
+    // RAG (Phase 10)
+    registerAction("query_documents", [this](const json& p) { return actionQueryDocuments(p); });
+    registerAction("ingest_document", [this](const json& p) { return actionIngestDocument(p); });
+    
+    // OS Semantic Timeline (Phase 11)
+    registerAction("search_timeline", [this](const json& p) { return actionSearchTimeline(p); });
 }
 
 void ActionExecutor::registerAction(const std::string& name, ActionHandler handler) {
@@ -112,6 +150,16 @@ std::pair<bool, std::string> ActionExecutor::executeAction(const std::string& ac
             return {false, "Action error: " + std::string(e.what())};
         }
     }
+
+    // ── Phase 8: Fallback to dynamically loaded plugins ──
+    if (plugin_loader_ && plugin_loader_->hasPluginTool(action)) {
+        try {
+            return plugin_loader_->executePluginTool(action, params);
+        } catch (const std::exception& e) {
+            return {false, "Plugin error: " + std::string(e.what())};
+        }
+    }
+
     return {false, "Unknown action: " + action};
 }
 
@@ -579,19 +627,61 @@ std::pair<bool, std::string> ActionExecutor::actionRunPowerShell(const json& par
     out << script;
     out.close();
 
-    // Run it and capture output
-    std::string cmd = "powershell -ExecutionPolicy Bypass -NoProfile -File \"" + tmp + "\" 2>&1";
-    std::string output;
-    FILE* pipe = _popen(cmd.c_str(), "r");
-    if (!pipe) return {false, "Failed to start PowerShell"};
-    
-    char buffer[256];
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        output += buffer;
-    }
-    _pclose(pipe);
+    // Secure execution using CreateProcess and Anonymous Pipes (NO _popen / system())
+    HANDLE hReadPipe, hWritePipe;
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = nullptr;
 
-    // Limit output length so it doesn't overflow context
+    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
+        return {false, "Failed to create output pipe"};
+    }
+    // Ensure the read handle to the pipe for STDOUT is not inherited
+    SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.hStdError = hWritePipe;
+    si.hStdOutput = hWritePipe;
+    si.dwFlags |= STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+
+    PROCESS_INFORMATION pi{};
+    
+    // PRD Fix 3: Prevent PATH hijacking by using the explicit absolute path to PowerShell
+    char sysDir[MAX_PATH];
+    GetSystemDirectoryA(sysDir, MAX_PATH);
+    std::string ps_path = std::string(sysDir) + "\\WindowsPowerShell\\v1.0\\powershell.exe";
+    std::string cmd = ps_path + " -ExecutionPolicy Bypass -NoProfile -NonInteractive -File \"" + tmp + "\"";
+    
+    // CreateProcess requires a modifiable command line string
+    std::vector<char> cmdBuffer(cmd.begin(), cmd.end());
+    cmdBuffer.push_back('\0');
+
+    bool success = CreateProcessA(nullptr, cmdBuffer.data(), nullptr, nullptr, TRUE,
+                                  CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    
+    // Close the write end of the pipe before reading, otherwise ReadFile will hang
+    CloseHandle(hWritePipe);
+
+    std::string output;
+    if (success) {
+        char buffer[4096];
+        DWORD bytesRead;
+        while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead != 0) {
+            output.append(buffer, bytesRead);
+        }
+        
+        // Wait for process to finish
+        WaitForSingleObject(pi.hProcess, 10000); // 10s timeout
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    
+    CloseHandle(hReadPipe);
+
+    // Limit output length so it doesn't overflow LLM context
     if (output.size() > 2000) {
         output = output.substr(0, 1000) + "\n...[output truncated]...\n" + output.substr(output.size() - 1000);
     }
@@ -600,7 +690,75 @@ std::pair<bool, std::string> ActionExecutor::actionRunPowerShell(const json& par
     std::error_code ec;
     std::filesystem::remove(tmp, ec);
     
+    if (!success) {
+        return {false, "Failed to start PowerShell via CreateProcessA"};
+    }
     return {true, output.empty() ? "Script executed successfully (no output)" : output};
+}
+
+// ═══════════════════ Document RAG (Phase 10) ═══════════════════
+
+std::pair<bool, std::string> ActionExecutor::actionQueryDocuments(const nlohmann::json& params) {
+    std::string query = params.value("query", "");
+    if (query.empty()) return {false, "Missing 'query' parameter"};
+
+    int top_k = params.value("top_k", 3);
+    auto results = app_.vectorMemory().search(query, top_k, 0.4f);
+
+    if (results.empty()) {
+        return {true, "No relevant documents found for query: " + query};
+    }
+
+    std::string context = "Relevant Document Excerpts:\n";
+    for (const auto& res : results) {
+        context += "Source: " + res.entry.source_file + " (Chunk " + std::to_string(res.entry.chunk_index) + ")\n";
+        context += res.entry.text + "\n---\n";
+    }
+
+    return {true, context};
+}
+
+std::pair<bool, std::string> ActionExecutor::actionIngestDocument(const nlohmann::json& params) {
+    std::string filepath = params.value("filepath", "");
+    if (filepath.empty()) return {false, "Missing 'filepath' parameter"};
+
+    int chunks = app_.vectorMemory().ingestDocument(filepath);
+    if (chunks < 0) {
+        return {false, "Failed to ingest document or unsupported file: " + filepath};
+    }
+    return {true, "Successfully ingested document into memory. Added " + std::to_string(chunks) + " context chunks."};
+}
+
+// ═══════════════════ OS Semantic Timeline (Phase 11) ═══════════════════
+
+std::pair<bool, std::string> ActionExecutor::actionSearchTimeline(const nlohmann::json& params) {
+    std::string query = params.value("query", "");
+    int top_k = params.value("top_k", 5);
+
+    auto results = app_.timeline().searchTimeline(query, top_k);
+    if (results.empty()) {
+        return {true, "No recent timeline events found matching query: " + query};
+    }
+
+    std::string context = "Recent OS Timeline Events for: " + (query.empty() ? "All activity" : query) + "\n";
+    for (const auto& ev : results) {
+        // Convert timestamp to human readable
+        auto sys_time = std::chrono::time_point<std::chrono::system_clock>(std::chrono::milliseconds(ev.timestamp));
+        auto time_t_val = std::chrono::system_clock::to_time_t(sys_time);
+        
+        char time_buf[64];
+        struct tm tm_info;
+#ifdef _MSC_VER
+        localtime_s(&tm_info, &time_t_val);
+#else
+        localtime_r(&time_t_val, &tm_info);
+#endif
+        std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &tm_info);
+
+        context += std::string("[") + time_buf + "] App: " + ev.app_name + " | Title: " + ev.window_title + "\n";
+    }
+
+    return {true, context};
 }
 
 } // namespace vision

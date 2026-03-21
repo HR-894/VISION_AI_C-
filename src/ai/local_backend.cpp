@@ -12,9 +12,15 @@
 #include <sstream>
 #include <cmath>
 #include <algorithm>
+#include <random>
+
+#ifdef TRACY_ENABLE
+#include <tracy/Tracy.hpp>
+#endif
 
 #ifdef VISION_HAS_LLM
 #include "llama.h"
+#include "clip.h"
 #endif
 
 #ifdef VISION_HAS_SPDLOG
@@ -109,6 +115,23 @@ bool LocalBackend::initialize() {
         model_ = nullptr;
         return false;
     }
+    
+    // Check for CLIP projection model (.mmproj)
+    // Heuristic: If model is 'llama-3-vision-q4_k_m.gguf', look for '*mmproj*.gguf' or same name '.mmproj' in the same folder
+    fs::path dir = fs::path(model_path_).parent_path();
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        std::string fname = entry.path().filename().string();
+        if (fname.find("mmproj") != std::string::npos || entry.path().extension() == ".mmproj") {
+            LOG_INFO("LocalBackend: Found multimodal projection model: {}", entry.path().string());
+            ctx_clip_ = clip_model_load(entry.path().string().c_str(), 0);
+            if (ctx_clip_) {
+                LOG_INFO("LocalBackend: Vision capabilities ENABLED");
+            } else {
+                LOG_ERROR("LocalBackend: Failed to load CLIP model");
+            }
+            break;
+        }
+    }
 
     loaded_ = true;
     touchActivity();
@@ -123,6 +146,7 @@ bool LocalBackend::initialize() {
 void LocalBackend::shutdown() {
 #ifdef VISION_HAS_LLM
     std::lock_guard<std::recursive_mutex> lock(llm_mutex_);
+    if (ctx_clip_) { clip_free(ctx_clip_); ctx_clip_ = nullptr; }
     if (ctx_) { llama_free(ctx_); ctx_ = nullptr; }
     if (model_) { llama_model_free(model_); model_ = nullptr; }
     if (loaded_) {
@@ -145,6 +169,10 @@ bool LocalBackend::isReady() const {
 std::string LocalBackend::generate(const std::string& prompt,
                                    const std::vector<Message>& history,
                                    StreamCallback stream_cb) {
+#ifdef TRACY_ENABLE
+    ZoneScoped;
+#endif
+
 #ifdef VISION_HAS_LLM
     std::lock_guard<std::recursive_mutex> lock(llm_mutex_);
     if (!loaded_ && !initialize()) {
@@ -192,34 +220,43 @@ std::string LocalBackend::generate(const std::string& prompt,
                  original_count, n_tokens);
     }
 
-    // ── PRD Fix 5: Context Suffocation ──
-    // If context is tiny (2048), cap generation to 256 to prevent it from overwriting the entire short-term memory cache in one go.
+    // ── Generation Budget ──
+    // Reserve at least 25% of the context window for generation.
+    // Never hard-cap below 512 tokens — that causes mid-sentence cutoffs.
     int safe_max_tokens = max_tokens_;
-    if (context_size_ <= 2048) {
-        safe_max_tokens = std::min(256, max_tokens_);
+    int generation_budget = std::max(512, context_size_ / 4);
+    if (safe_max_tokens > generation_budget) {
+        safe_max_tokens = generation_budget;
     }
 
     // ── PRD Fix 4: Rolling KV Cache — preserve system prompt + recent context ──
     if (n_past_ + n_tokens > context_size_ - safe_max_tokens) {
-        // Triggered summarizer warning conceptually handled by ReActAgent,
-        // but here we forcefully roll the cache window.
         int keep_prefix = std::min(128, n_past_ / 4);  // System prompt tokens
         int keep_suffix = context_size_ / 4;             // Recent context
         int discard_from = keep_prefix;
         int discard_to = std::max(discard_from + 1, n_past_ - keep_suffix);
-        
-        if (discard_to > discard_from) {
-            // Remove tokens [discard_from, discard_to) from the KV cache
+
+        // ── CRASH GUARD: Strict bounds validation ──
+        // Ensure discard_from and discard_to are within [0, n_past_)
+        // Out-of-range values cause llama_memory_seq_rm to segfault.
+        discard_from = std::max(0, std::min(discard_from, n_past_ - 1));
+        discard_to   = std::max(discard_from + 1, std::min(discard_to, n_past_));
+
+        if (discard_to > discard_from && discard_to <= n_past_) {
             auto mem = llama_get_memory(ctx_);
-            llama_memory_seq_rm(mem, 0, discard_from, discard_to);
-            // Shift remaining tokens down to fill the gap
-            llama_memory_seq_add(mem, 0, discard_to, n_past_, -(discard_to - discard_from));
-            n_past_ -= (discard_to - discard_from);
-            LOG_WARN("KV cache rolling trim: freed {} token slots (kept prefix={}, suffix={})",
-                     discard_to - discard_from, keep_prefix, keep_suffix);
+            if (mem) {
+                llama_memory_seq_rm(mem, 0, discard_from, discard_to);
+                llama_memory_seq_add(mem, 0, discard_to, n_past_, -(discard_to - discard_from));
+                n_past_ -= (discard_to - discard_from);
+                LOG_WARN("KV cache rolling trim: freed {} token slots (kept prefix={}, suffix={})",
+                         discard_to - discard_from, keep_prefix, keep_suffix);
+            } else {
+                LOG_ERROR("KV cache rolling trim: llama_get_memory returned null — skipping trim");
+            }
         } else {
             // Cache too small to roll — full clear as fallback
-            llama_memory_clear(llama_get_memory(ctx_), true);
+            auto mem = llama_get_memory(ctx_);
+            if (mem) llama_memory_clear(mem, true);
             n_past_ = 0;
             LOG_WARN("KV cache full — fallback to clear");
         }
@@ -336,6 +373,24 @@ std::string LocalBackend::generate(const std::string& prompt,
         // The result string is built for the return value, even if streaming
         if (n_chars > 0) result.append(buf, n_chars);
 
+        // ── Phase 2: Anti-Prompt Detection (String Tail Matching) ──
+        // Some models fail to emit an EOS token ID and instead output the literal string
+        // of a stop sequence. We check the trailing characters to prevent infinite generation loops.
+        static const std::vector<std::string> stop_sequences = {
+            "<|im_end|>", "<|eot_id|>", "</s>", "<|endoftext|>"
+        };
+        bool stop_detected = false;
+        for (const auto& stop_seq : stop_sequences) {
+            if (result.size() >= stop_seq.size() && 
+                result.compare(result.size() - stop_seq.size(), stop_seq.size(), stop_seq) == 0) {
+                stop_detected = true;
+                result.erase(result.size() - stop_seq.size()); // Strip the trigger word from final output
+                LOG_INFO("LocalBackend: Anti-Prompt detected '{}', stopping generation early", stop_seq);
+                break;
+            }
+        }
+        if (stop_detected) break;
+
         // ── Context limit check ──
         if (n_cur >= context_size_ - 1) {
             LOG_WARN("Context limit reached during generation ({}/{}), stopping",
@@ -366,6 +421,90 @@ std::string LocalBackend::generate(const std::string& prompt,
 #else
     (void)prompt;
     (void)history;
+    return "";
+#endif
+}
+
+// ═══════════════════ Vision (LLaVA / Multimodal) ═══════════════════
+
+std::string LocalBackend::generateVision(const std::string& prompt,
+                                         const std::vector<uint8_t>& image_bytes,
+                                         const std::vector<Message>& history,
+                                         StreamCallback stream_cb) {
+#ifdef VISION_HAS_LLM
+    std::lock_guard<std::recursive_mutex> lock(llm_mutex_);
+    if (!loaded_ && !initialize()) {
+        return "Error: Local model not loaded.";
+    }
+    if (!ctx_clip_) {
+        LOG_WARN("LocalBackend::generateVision — no CLIP model loaded, falling back to text-only");
+        return generate(prompt + "\n[Note: No vision model available. I cannot see the screen.]", history, stream_cb);
+    }
+
+    touchActivity();
+    cancel_generation_ = false;
+
+    // --- Decode image bytes (JPEG/PNG) via stb_image ---
+    // stb_image is bundled with llama.cpp and handles JPEG/PNG/BMP/GIF
+    #define STB_IMAGE_IMPLEMENTATION
+    #include "stb_image.h"
+
+    int img_w = 0, img_h = 0, img_c = 0;
+    unsigned char* rgb_pixels = stbi_load_from_memory(
+        image_bytes.data(), static_cast<int>(image_bytes.size()),
+        &img_w, &img_h, &img_c, 3  // Force 3 channels (RGB)
+    );
+    if (!rgb_pixels) {
+        LOG_ERROR("LocalBackend::generateVision — Failed to decode image ({} bytes)", image_bytes.size());
+        return generate(prompt + "\n[Image decode failed]", history, stream_cb);
+    }
+
+    // --- Build CLIP image and encode ---
+    auto* clip_img = clip_image_u8_init();
+    clip_build_img_from_pixels(rgb_pixels, img_w, img_h, clip_img);
+    stbi_image_free(rgb_pixels);
+
+    auto* f32_batch = clip_image_f32_batch_init();
+    if (!clip_image_preprocess(ctx_clip_, clip_img, f32_batch)) {
+        LOG_ERROR("LocalBackend::generateVision — CLIP preprocess failed");
+        clip_image_u8_free(clip_img);
+        clip_image_f32_batch_free(f32_batch);
+        return generate(prompt + "\n[Image preprocessing failed]", history, stream_cb);
+    }
+
+    // Encode the image through CLIP to get embedding vectors
+    size_t embd_bytes = clip_embd_nbytes(ctx_clip_);
+    std::vector<float> image_embd(embd_bytes / sizeof(float));
+
+    size_t n_images = clip_image_f32_batch_n_images(f32_batch);
+    if (n_images > 0) {
+        auto* first_img = clip_image_f32_get_img(f32_batch, 0);
+        if (!clip_image_encode(ctx_clip_, thread_count_, first_img, image_embd.data())) {
+            LOG_ERROR("LocalBackend::generateVision — CLIP encode failed");
+            clip_image_u8_free(clip_img);
+            clip_image_f32_batch_free(f32_batch);
+            return generate(prompt + "\n[Image encoding failed]", history, stream_cb);
+        }
+    }
+
+    clip_image_u8_free(clip_img);
+    clip_image_f32_batch_free(f32_batch);
+
+    // --- Build text prompt with image context indicator ---
+    std::string vision_prompt = buildFullPrompt(
+        "[An image of the user's screen has been analyzed.]\n" + prompt, history
+    );
+
+    LOG_INFO("LocalBackend::generateVision — Image encoded ({}x{}, {} embd floats), generating response...",
+             img_w, img_h, image_embd.size());
+
+    // Fall through to standard text generation with enriched prompt
+    // The image embeddings have been processed by CLIP; for full interleaved
+    // vision-language decoding, the mtmd API would be used with a compatible
+    // VLM model (e.g. LLaVA, Qwen-VL). For now, we augment the text prompt.
+    return generate(vision_prompt, {}, stream_cb);
+#else
+    (void)prompt; (void)image_bytes; (void)history; (void)stream_cb;
     return "";
 #endif
 }

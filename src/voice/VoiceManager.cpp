@@ -8,6 +8,10 @@
 #include "WhisperEngine.h"
 
 #include <QDebug>
+#include <QMetaObject>
+#include <thread>
+#include <chrono>
+#include <algorithm>
 
 namespace vision::voice {
 
@@ -82,11 +86,15 @@ bool VoiceManager::initialize(const std::string& whisperModelPath)
 
     m_initialized = true;
     qInfo() << "[VoiceManager] Initialization complete.";
+    
+    // Auto-start wake-word listener
+    startWakeWordListener();
     return true;
 }
 
 void VoiceManager::shutdown()
 {
+    stopWakeWordListener();
     abortListening();
 
     if (m_whisperEngine) m_whisperEngine->unloadModel();
@@ -178,6 +186,73 @@ void VoiceManager::abortListening()
 
     setState(VoiceState::Idle);
     qInfo() << "[VoiceManager] Listening aborted.";
+    
+    // Resume background audio if wake word is active
+    if (m_wakeWordRunning) {
+        m_audioCapture->startRecording();
+    }
+}
+
+// =========================================================================
+// Wake Word
+// =========================================================================
+
+void VoiceManager::startWakeWordListener()
+{
+    if (m_wakeWordRunning.exchange(true)) return;
+    
+    // Ensure capture is running
+    if (!m_audioCapture->isRecording() && state() == VoiceState::Idle) {
+        m_audioCapture->startRecording();
+    }
+    
+    m_wakeWordThread = std::make_unique<std::thread>(&VoiceManager::wakeWordLoop, this);
+    qInfo() << "[VoiceManager] Wake-Word listener started.";
+}
+
+void VoiceManager::stopWakeWordListener()
+{
+    m_wakeWordRunning = false;
+    if (m_wakeWordThread && m_wakeWordThread->joinable()) {
+        m_wakeWordThread->join();
+    }
+    m_wakeWordThread.reset();
+}
+
+void VoiceManager::wakeWordLoop()
+{
+    while (m_wakeWordRunning) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        
+        // Skip wake word check if already actively listening or processing
+        if (state() != VoiceState::Idle) continue;
+        
+        // We only care about the very recent audio tail
+        auto audio = m_audioCapture->getLastNSeconds(1.2f);
+        if (audio.size() < 16000 * 0.8) continue; // Minimum 0.8s
+        
+        // Fast decode without high accuracy
+        auto result = m_whisperEngine->transcribe(audio, false);
+        std::string text = result.text;
+        std::transform(text.begin(), text.end(), text.begin(), ::tolower);
+        
+        if (text.find("hey vision") != std::string::npos ||
+            text.find("vision awake") != std::string::npos ||
+            text.find("hey listen") != std::string::npos) {
+            
+            qInfo() << "[VoiceManager] Wake-Word Detected! Text: " << QString::fromStdString(text);
+            
+            // Hop to main thread to start listening cleanly
+            QMetaObject::invokeMethod(this, [this]() {
+                if (state() == VoiceState::Idle) {
+                    startListening();
+                }
+            }, Qt::QueuedConnection);
+            
+            // Sleep to debounce
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+    }
 }
 
 // =========================================================================
@@ -320,6 +395,10 @@ void VoiceManager::onFinalTranscription(const QString& text, float confidence)
 
     m_accumulatedPartialText.clear();
     setState(VoiceState::Idle);
+    
+    if (m_wakeWordRunning) {
+        m_audioCapture->startRecording();
+    }
 }
 
 void VoiceManager::onEngineError(const QString& err)
@@ -336,6 +415,10 @@ void VoiceManager::onEngineError(const QString& err)
 
     m_accumulatedPartialText.clear();
     setState(VoiceState::Idle);
+
+    if (m_wakeWordRunning) {
+        m_audioCapture->startRecording();
+    }
 }
 
 } // namespace vision::voice

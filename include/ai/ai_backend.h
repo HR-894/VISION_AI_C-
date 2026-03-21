@@ -71,6 +71,14 @@ public:
                                  const std::vector<Message>& history,
                                  StreamCallback stream_cb = nullptr) = 0;
 
+    /// Multimodal generation (text + image). Default implementation falls back to text-only.
+    virtual std::string generateVision(const std::string& prompt,
+                                       const std::vector<uint8_t>& /*image_bytes*/,
+                                       const std::vector<Message>& history,
+                                       StreamCallback stream_cb = nullptr) {
+        return generate(prompt, history, stream_cb);
+    }
+
     /// Get text embeddings (lightweight vector for semantic memory)
     /// @return Embedding vector (may be empty if not supported)
     virtual std::vector<float> getEmbeddings(const std::string& text) = 0;

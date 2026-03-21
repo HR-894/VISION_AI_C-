@@ -183,12 +183,18 @@ set(VISION_HEADERS
     include/automation/model_downloader_wizard.h
     include/automation/ui_automation.h
     include/ui/chat_widget.h
+    include/ui/voice_visualizer.h
     include/vision/screen_observer.h
     include/memory/vector_memory.h
     include/core/confidence_scorer.h
     include/ui/settings_dialog.h
     include/ui/vision_ai.h
     include/core/doctor.h
+    include/core/update_manager.h
+    include/plugins/i_action_plugin.h
+    include/plugins/plugin_loader.h
+    include/memory/document_parser.h
+    include/vision/timeline_logger.h
 )
 
 set(VISION_SOURCES
@@ -211,11 +217,16 @@ set(VISION_SOURCES
     src/automation/ui_automation.cpp
     src/ui/vision_ai.cpp
     src/ui/chat_widget.cpp
+    src/ui/voice_visualizer.cpp
     src/vision/screen_observer.cpp
     src/memory/vector_memory.cpp
     src/core/confidence_scorer.cpp
     src/ui/settings_dialog.cpp
     src/core/doctor.cpp
+    src/core/update_manager.cpp
+    src/plugins/plugin_loader.cpp
+    src/memory/document_parser.cpp
+    src/vision/timeline_logger.cpp
 )
 
 if(VISION_ENABLE_WHISPER)
@@ -256,6 +267,35 @@ if(VISION_ENABLE_OCR)
 endif()
 
 # ============================================================
+# Plugin shared libraries (Phase 8)
+# ============================================================
+if(VISION_ENABLE_LLM)
+    # Web Plugin DLL
+    add_library(web_plugin SHARED src/plugins/web_plugin/web_plugin.cpp)
+    target_include_directories(web_plugin PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/include/plugins
+    )
+    target_link_libraries(web_plugin PRIVATE nlohmann_json shell32)
+    target_compile_definitions(web_plugin PRIVATE VISION_PLUGIN_EXPORT)
+    set_target_properties(web_plugin PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/plugins
+    )
+
+    # Media Plugin DLL
+    add_library(media_plugin SHARED src/plugins/media_plugin/media_plugin.cpp)
+    target_include_directories(media_plugin PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/include/plugins
+    )
+    target_link_libraries(media_plugin PRIVATE nlohmann_json ole32 user32)
+    target_compile_definitions(media_plugin PRIVATE VISION_PLUGIN_EXPORT)
+    set_target_properties(media_plugin PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/plugins
+    )
+endif()
+
+# ============================================================
 # Main executable
 # ============================================================
 qt_add_executable(VISION_AI WIN32 ${VISION_SOURCES} ${VISION_HEADERS})
@@ -279,6 +319,7 @@ target_include_directories(VISION_AI PRIVATE
     ${CMAKE_SOURCE_DIR}/include/automation
     ${CMAKE_SOURCE_DIR}/include/memory
     ${CMAKE_SOURCE_DIR}/include/core
+    ${CMAKE_SOURCE_DIR}/include/plugins
 )
 
 # ============================================================
@@ -299,6 +340,7 @@ target_link_libraries(VISION_AI PRIVATE
     pdh setupapi advapi32 iphlpapi
     dwmapi powrprof gdiplus psapi shlwapi
     wlanapi crypt32 oleacc
+    dxgi d3d11 uiautomationcore
 )
 
 # spdlog
@@ -355,18 +397,41 @@ target_compile_definitions(VISION_AI PRIVATE
     NOMINMAX
     _CRT_SECURE_NO_WARNINGS
     VISION_VERSION="${PROJECT_VERSION}"
+    VISION_AI_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+    VISION_AI_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    VISION_AI_VERSION_PATCH=${PROJECT_VERSION_PATCH}
     ${VISION_GPU_DEFINE}  # CUDA / Vulkan / CPU flag
 )
 
 if(MSVC)
-    target_compile_options(VISION_AI PRIVATE /W4 /utf-8 /permissive- /EHa)
+    target_compile_options(VISION_AI PRIVATE /W4 /utf-8 /permissive- /EHa /Zc:__cplusplus)
 else()
     target_compile_options(VISION_AI PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 # ============================================================
-# Post-build: Qt platform plugins are handled by windeployqt during deployment
+# Post-build: windeployqt + asset copy
+# ============================================================
 
+# Automatically run windeployqt on the built executable
+# This copies Qt DLLs, plugins (platforms/, imageformats/, tls/, styles/) into the output dir
+find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${Qt6_DIR}/../../../bin")
+if(WINDEPLOYQT_EXECUTABLE)
+    add_custom_command(TARGET VISION_AI POST_BUILD
+        COMMAND "${WINDEPLOYQT_EXECUTABLE}"
+            --no-translations
+            --no-opengl-sw
+            --no-system-d3d-compiler
+            "$<TARGET_FILE:VISION_AI>"
+        COMMENT "Running windeployqt to deploy Qt dependencies..."
+        VERBATIM
+    )
+    message(STATUS "✓ windeployqt found: ${WINDEPLOYQT_EXECUTABLE}")
+else()
+    message(WARNING "⚠ windeployqt not found — Qt DLLs must be manually deployed")
+endif()
+
+# Copy model files
 if(EXISTS "${CMAKE_SOURCE_DIR}/models")
     add_custom_command(TARGET VISION_AI POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -376,6 +441,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/models")
     )
 endif()
 
+# Copy image templates
 if(EXISTS "${CMAKE_SOURCE_DIR}/images")
     add_custom_command(TARGET VISION_AI POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -385,20 +451,121 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/images")
     )
 endif()
 
+# Create persistent data directory
+add_custom_command(TARGET VISION_AI POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:VISION_AI>/data"
+    COMMENT "Creating data/ directory for persistent user memory..."
+)
+
 # ============================================================
-# Tests (optional)
+# Post-build: Copy third-party DLLs to output directory
 # ============================================================
+
+# llama.cpp DLL
+if(VISION_ENABLE_LLM AND TARGET llama)
+    add_custom_command(TARGET VISION_AI POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:llama>"
+            "$<TARGET_FILE_DIR:VISION_AI>"
+        COMMENT "Copying llama.dll..."
+    )
+    # Also copy ggml if it's a separate shared lib
+    if(TARGET ggml)
+        add_custom_command(TARGET VISION_AI POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:ggml>"
+                "$<TARGET_FILE_DIR:VISION_AI>"
+            COMMENT "Copying ggml.dll..."
+        )
+    endif()
+endif()
+
+# whisper.cpp DLL
+if(VISION_ENABLE_WHISPER AND TARGET whisper)
+    add_custom_command(TARGET VISION_AI POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:whisper>"
+            "$<TARGET_FILE_DIR:VISION_AI>"
+        COMMENT "Copying whisper.dll..."
+    )
+endif()
+
+# PortAudio DLL
+if(VISION_ENABLE_AUDIO)
+    if(TARGET portaudio)
+        add_custom_command(TARGET VISION_AI POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:portaudio>"
+                "$<TARGET_FILE_DIR:VISION_AI>"
+            COMMENT "Copying portaudio.dll..."
+        )
+    endif()
+endif()
+
+# ============================================================
+# Tests (Phase 12: Enterprise Hardening)
+# ============================================================
+option(VISION_BUILD_TESTS "Build Unit Tests using GoogleTest" ON)
+
 if(VISION_BUILD_TESTS)
     enable_testing()
+    
+    include(FetchContent)
+    FetchContent_Declare(
+      googletest
+      URL https://github.com/google/googletest/archive/03597a01ee50ed33e9dfd640b249b4be3799d395.zip
+    )
+    # For Windows: Prevent overriding the parent project's compiler/linker settings
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+    
     add_subdirectory(tests)
 endif()
 
 # ============================================================
-# Install rules
+# Profiling (Phase 12: Enterprise Hardening)
+# ============================================================
+option(VISION_ENABLE_PROFILING "Enable Tracy Frame Profiler" OFF)
+
+if(VISION_ENABLE_PROFILING)
+    FetchContent_Declare(
+        tracy
+        URL https://github.com/wolfpld/tracy/archive/refs/tags/v0.10.zip
+    )
+    FetchContent_MakeAvailable(tracy)
+    target_link_libraries(VISION_AI PRIVATE TracyClient)
+    target_compile_definitions(VISION_AI PRIVATE TRACY_ENABLE)
+endif()
+
+# ============================================================
+# Install rules (for CPack / manual install)
 # ============================================================
 install(TARGETS VISION_AI RUNTIME DESTINATION bin)
 install(DIRECTORY models/ DESTINATION bin/models OPTIONAL)
 install(DIRECTORY images/ DESTINATION bin/images OPTIONAL)
+install(DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/data"
+        DESTINATION bin/data OPTIONAL)
+
+# Install third-party DLLs
+if(VISION_ENABLE_LLM AND TARGET llama)
+    install(FILES "$<TARGET_FILE:llama>" DESTINATION bin)
+endif()
+if(VISION_ENABLE_WHISPER AND TARGET whisper)
+    install(FILES "$<TARGET_FILE:whisper>" DESTINATION bin)
+endif()
+
+# Install Qt deployed files (windeployqt output is alongside the exe)
+install(DIRECTORY "$<TARGET_FILE_DIR:VISION_AI>/platforms"  DESTINATION bin OPTIONAL)
+install(DIRECTORY "$<TARGET_FILE_DIR:VISION_AI>/styles"     DESTINATION bin OPTIONAL)
+install(DIRECTORY "$<TARGET_FILE_DIR:VISION_AI>/imageformats" DESTINATION bin OPTIONAL)
+install(DIRECTORY "$<TARGET_FILE_DIR:VISION_AI>/tls"        DESTINATION bin OPTIONAL)
+
+# Install all .dll files from the build output (catches Qt DLLs, curl, etc.)
+install(DIRECTORY "$<TARGET_FILE_DIR:VISION_AI>/"
+        DESTINATION bin
+        FILES_MATCHING PATTERN "*.dll"
+        PATTERN "plugins" EXCLUDE)
 
 message(STATUS "============================================")
 message(STATUS "  VISION AI v${PROJECT_VERSION}")
