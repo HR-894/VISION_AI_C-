@@ -30,3 +30,5 @@ desktop.ini
 
 # Third party dependencies (rebuild from CMake)
 third_party/
+!third_party/nlohmann/json.hpp
+!third_party/spdlog/
