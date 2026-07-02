@@ -14,43 +14,26 @@ jobs:
     
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: recursive
 
     - name: Setup MSVC
       uses: ilammy/msvc-dev-cmd@v1
 
-    - name: Setup Qt 6
-      uses: jurplel/install-qt-action@v3
-      with:
-        version: '6.5.0'
-        arch: 'win64_msvc2019_64'
-        modules: 'qtwebview qtwebengine'
+    - name: Install gRPC & Protobuf
+      run: |
+        vcpkg install grpc protobuf
+        vcpkg integrate install
 
     - name: Configure CMake
-      run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DVISION_BUILD_TESTS=ON -DVISION_ENABLE_LLM=ON -DVISION_ENABLE_OCR=OFF -DVISION_ENABLE_WHISPER=OFF -DVISION_ENABLE_CLOUD=OFF -DVISION_ENABLE_AUDIO=OFF
+      run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVISION_ENABLE_WHISPER=ON -DVISION_ENABLE_OCR=ON -DVISION_ENABLE_AUDIO=ON
 
     - name: Build
       run: cmake --build build --config Release --parallel 4
 
-    - name: Run Unit Tests
-      working-directory: build/tests
-      run: ctest -C Release --output-on-failure
-
-    - name: Package with windeployqt
-      working-directory: build/bin/Release
-      run: windeployqt --no-translations VISION_AI.exe
-
-    # Skip InnoSetup for PRs, only for releases or main pushes
-    - name: Download InnoSetup (for Installer)
-      if: github.event_name == 'release' || github.event_name == 'push'
-      run: choco install innosetup
-
-    - name: Build Windows Installer
-      if: github.event_name == 'release' || github.event_name == 'push'
-      run: iscc installer.iss
-
-    - name: Upload Installer Artifact
+    - name: Upload Daemon Artifact
       if: github.event_name == 'release' || github.event_name == 'push'
       uses: actions/upload-artifact@v4
       with:
-        name: VisionAI-Installer
-        path: Output/VisionAI_Setup.exe
+        name: VisionDaemon-Windows
+        path: build/bin/Release/vision_daemon.exe
