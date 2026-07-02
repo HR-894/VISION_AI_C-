@@ -161,6 +161,7 @@ std::string CloudBackend::generate(const std::string& prompt,
     curl_slist_free_all(headers);
 
     if (res != CURLE_OK) {
+        active_stream_cb_ = nullptr;
         if (res == CURLE_ABORTED_BY_CALLBACK) {
             LOG_WARN("CloudBackend: Request cancelled by user");
         } else {

@@ -11,6 +11,7 @@
 #include "safety_guard.h"
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <filesystem>
 #include <regex>
 #include <windows.h>
@@ -19,6 +20,20 @@
 namespace fs = std::filesystem;
 
 namespace vision {
+
+namespace {
+
+bool isSameOrChildPath(const std::string& candidate,
+                       const std::string& base) {
+    if (candidate == base) return true;
+    if (candidate.size() <= base.size()) return false;
+    if (candidate.compare(0, base.size(), base) != 0) return false;
+
+    const char boundary = candidate[base.size()];
+    return boundary == '\\' || boundary == '/';
+}
+
+} // namespace
 
 // ═══════════════════ Protected System Paths (Hard Block) ═══════════════════
 
@@ -108,16 +123,20 @@ std::string SafetyGuard::normalizePath(const std::string& path) const {
         if (p.is_relative()) {
             p = fs::absolute(p);
         }
-        // FIX S3: Resolve symlinks/junctions to prevent path traversal bypass
-        // An attacker could create a junction: Downloads\escape -> C:\Windows\System32
-        // canonical() resolves all symlinks to the real target path
-        std::string normalized;
-        if (fs::exists(p)) {
-            normalized = fs::canonical(p).string();
-        } else {
-            // Path doesn't exist yet (new file) — use lexically_normal as fallback
-            normalized = p.lexically_normal().string();
+
+        // Resolve as much of the path as possible so nonexistent children
+        // still inherit the canonicalized parent and cannot bypass checks via
+        // junctions/symlinks inside a whitelisted directory.
+        std::error_code ec;
+        fs::path resolved = fs::weakly_canonical(p, ec);
+        if (ec) {
+            ec.clear();
+            resolved = fs::absolute(p, ec);
+            if (ec) resolved = p;
+            resolved = resolved.lexically_normal();
         }
+
+        std::string normalized = resolved.make_preferred().string();
         // Uppercase drive letter
         if (normalized.size() >= 2 && normalized[1] == ':') {
             normalized[0] = static_cast<char>(std::toupper(normalized[0]));
@@ -140,10 +159,12 @@ bool SafetyGuard::matchesPattern(const std::string& path,
     // Case-insensitive prefix match
     std::string lower_path = norm_path;
     std::string lower_pattern = norm_pattern;
-    std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(), ::tolower);
-    std::transform(lower_pattern.begin(), lower_pattern.end(), lower_pattern.begin(), ::tolower);
-    
-    return lower_path.starts_with(lower_pattern);
+    std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(lower_pattern.begin(), lower_pattern.end(), lower_pattern.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    return isSameOrChildPath(lower_path, lower_pattern);
 }
 
 // ═══════════════════ Core Whitelist/Protection Checks ═══════════════════

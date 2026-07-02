@@ -616,14 +616,18 @@ std::string LLMController::canonicalCacheKey(const std::string& prompt) const {
     result.reserve(key.size());
     for (size_t i = 0; i < key.size(); i++) {
         // Skip 10+ digit sequences (Unix timestamps)
-        if (std::isdigit(key[i])) {
+        if (std::isdigit(static_cast<unsigned char>(key[i]))) {
             size_t j = i;
-            while (j < key.size() && std::isdigit(key[j])) j++;
+            while (j < key.size() &&
+                   std::isdigit(static_cast<unsigned char>(key[j]))) j++;
             if (j - i >= 10) { i = j - 1; continue; }  // Skip the timestamp
         }
         // Skip ISO datetime patterns (YYYY-MM-DD)
-        if (i + 9 < key.size() && std::isdigit(key[i]) &&
-            std::isdigit(key[i+1]) && std::isdigit(key[i+2]) && std::isdigit(key[i+3]) &&
+        if (i + 9 < key.size() &&
+            std::isdigit(static_cast<unsigned char>(key[i])) &&
+            std::isdigit(static_cast<unsigned char>(key[i+1])) &&
+            std::isdigit(static_cast<unsigned char>(key[i+2])) &&
+            std::isdigit(static_cast<unsigned char>(key[i+3])) &&
             key[i+4] == '-') {
             i += 9;  // Skip past YYYY-MM-DD
             if (i + 1 < key.size() && key[i+1] == 'T') i += 9;  // Skip THH:MM:SS too
@@ -654,7 +658,23 @@ std::string LLMController::canonicalCacheKey(const std::string& prompt) const {
         aw_pos = result.find("Active window:", aw_pos);
     }
 
-    return result;
+    std::string context_fingerprint =
+        "backend=" + std::string(active_type_ == BackendType::Local ? "local" : "cloud") +
+        "|family=" + std::to_string(static_cast<int>(active_family_)) +
+        "|temp=" + std::to_string(static_cast<int>(temperature_ * 1000.0f)) +
+        "|top_p=" + std::to_string(static_cast<int>(top_p_ * 1000.0f)) +
+        "|system=" + system_prompt_ +
+        "|history=";
+
+    const int history_start = std::max(0, static_cast<int>(conversation_.size()) - 4);
+    for (int i = history_start; i < static_cast<int>(conversation_.size()); ++i) {
+        context_fingerprint += conversation_[i].role;
+        context_fingerprint += ':';
+        context_fingerprint += conversation_[i].content.substr(0, 128);
+        context_fingerprint += '|';
+    }
+
+    return std::to_string(std::hash<std::string>{}(context_fingerprint)) + "|" + result;
 }
 
 // ═══════════════════ Response Cache ═══════════════════════════════

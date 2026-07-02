@@ -620,9 +620,18 @@ std::pair<bool, std::string> ActionExecutor::actionRunPowerShell(const json& par
     std::string script = params.value("script", "");
     if (script.empty()) return {false, "No script provided"};
 
-    // Save script to a temp file
-    std::string tmp = std::filesystem::temp_directory_path().string() + "\\vision_ai_script.ps1";
-    std::ofstream out(tmp);
+    char tempDir[MAX_PATH] = {0};
+    if (GetTempPathA(MAX_PATH, tempDir) == 0) {
+        return {false, "Failed to resolve temp directory"};
+    }
+
+    char tempFile[MAX_PATH] = {0};
+    if (GetTempFileNameA(tempDir, "vai", 0, tempFile) == 0) {
+        return {false, "Failed to allocate temp script file"};
+    }
+
+    std::string tmp = tempFile;
+    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
     if (!out) return {false, "Failed to create temp script file"};
     out << script;
     out.close();
@@ -666,15 +675,53 @@ std::pair<bool, std::string> ActionExecutor::actionRunPowerShell(const json& par
     CloseHandle(hWritePipe);
 
     std::string output;
+    bool timed_out = false;
+    DWORD exit_code = 0;
     if (success) {
-        char buffer[4096];
-        DWORD bytesRead;
-        while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead != 0) {
-            output.append(buffer, bytesRead);
+        auto drainPipe = [&output, hReadPipe]() {
+            for (;;) {
+                DWORD bytesAvail = 0;
+                if (!PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &bytesAvail, nullptr) ||
+                    bytesAvail == 0) {
+                    break;
+                }
+
+                char buffer[4096];
+                DWORD bytesRead = 0;
+                DWORD toRead = std::min<DWORD>(bytesAvail, sizeof(buffer));
+                if (!ReadFile(hReadPipe, buffer, toRead, &bytesRead, nullptr) || bytesRead == 0) {
+                    break;
+                }
+                output.append(buffer, bytesRead);
+            }
+        };
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (true) {
+            drainPipe();
+
+            DWORD wait = WaitForSingleObject(pi.hProcess, 50);
+            if (wait == WAIT_OBJECT_0) {
+                drainPipe();
+                GetExitCodeProcess(pi.hProcess, &exit_code);
+                break;
+            }
+
+            if (wait == WAIT_FAILED) {
+                exit_code = GetLastError();
+                break;
+            }
+
+            if (std::chrono::steady_clock::now() >= deadline) {
+                timed_out = true;
+                TerminateProcess(pi.hProcess, 1);
+                WaitForSingleObject(pi.hProcess, 1000);
+                drainPipe();
+                exit_code = 1;
+                break;
+            }
         }
-        
-        // Wait for process to finish
-        WaitForSingleObject(pi.hProcess, 10000); // 10s timeout
+
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     }
@@ -692,6 +739,14 @@ std::pair<bool, std::string> ActionExecutor::actionRunPowerShell(const json& par
     
     if (!success) {
         return {false, "Failed to start PowerShell via CreateProcessA"};
+    }
+    if (timed_out) {
+        return {false, output.empty() ? "PowerShell script timed out after 10 seconds"
+                                      : "PowerShell script timed out after 10 seconds\n" + output};
+    }
+    if (exit_code != 0) {
+        return {false, output.empty() ? "PowerShell exited with code " + std::to_string(exit_code)
+                                      : "PowerShell exited with code " + std::to_string(exit_code) + "\n" + output};
     }
     return {true, output.empty() ? "Script executed successfully (no output)" : output};
 }

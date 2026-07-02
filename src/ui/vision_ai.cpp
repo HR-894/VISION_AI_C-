@@ -189,9 +189,18 @@ VisionAI::VisionAI(QWidget* parent)
                 .arg(update_manager_->latestVersion()),
             QMessageBox::Yes | QMessageBox::No);
         if (result == QMessageBox::Yes) {
-            // Launch the installer and exit
-            QProcess::startDetached(path, QStringList() << "/SILENT");
-            QApplication::quit();
+            if (!path.endsWith(".exe", Qt::CaseInsensitive)) {
+                QMessageBox::warning(this, "Update Error",
+                                     "Downloaded update is not an installer executable.");
+                return;
+            }
+
+            if (QProcess::startDetached(path, QStringList() << "/SILENT")) {
+                QApplication::quit();
+            } else {
+                QMessageBox::warning(this, "Update Error",
+                                     "Failed to start the downloaded installer.");
+            }
         }
     });
 
@@ -1423,8 +1432,8 @@ bool VisionAI::openApp(const std::string& name) {
     // 2. Check app shortcuts (e.g. "notepad" → "notepad.exe")
     auto app_it = APP_SHORTCUTS.find(lower);
     if (app_it != APP_SHORTCUTS.end()) {
-        ShellExecuteA(nullptr, "open", app_it->second.c_str(), nullptr, nullptr, SW_SHOW);
-        return true;
+        HINSTANCE r = ShellExecuteA(nullptr, "open", app_it->second.c_str(), nullptr, nullptr, SW_SHOW);
+        return reinterpret_cast<intptr_t>(r) > 32;
     }
 
     // 3. Try as local file or folder via ShellExecute (handles paths and explorer)
@@ -1436,8 +1445,8 @@ bool VisionAI::openApp(const std::string& name) {
     // 4. Check URL shortcuts (only if no app matches)
     auto url_it = URL_SHORTCUTS.find(lower);
     if (url_it != URL_SHORTCUTS.end()) {
-        ShellExecuteA(nullptr, "open", url_it->second.c_str(), nullptr, nullptr, SW_SHOW);
-        return true;
+        HINSTANCE r = ShellExecuteA(nullptr, "open", url_it->second.c_str(), nullptr, nullptr, SW_SHOW);
+        return reinterpret_cast<intptr_t>(r) > 32;
     }
 
     // 5. Fuzzy match: scan APP_SHORTCUTS and STORE_APPS for typo tolerance

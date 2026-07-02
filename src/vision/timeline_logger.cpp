@@ -48,29 +48,44 @@ TimelineLogger::~TimelineLogger() {
 
 void TimelineLogger::start() {
     if (running_.exchange(true)) return;
+    queue_ready_ = false;
+    thread_id_ = 0;
     g_logger_instance = this;
 
     hook_thread_ = std::thread([this]() {
         runMessageLoop();
     });
+
+    for (int i = 0; i < 100 && running_.load() && !queue_ready_.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
     LOG_INFO("TimelineLogger started. Tracking background context to {}", log_file_path_);
 }
 
 void TimelineLogger::stop() {
     if (!running_.exchange(false)) return;
 
-    if (thread_id_ != 0) {
+    for (int i = 0; i < 100 && hook_thread_.joinable() && !queue_ready_.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    if (thread_id_ != 0 && queue_ready_.load()) {
         PostThreadMessage(thread_id_, WM_QUIT, 0, 0);
     }
     if (hook_thread_.joinable()) {
         hook_thread_.join();
     }
+    thread_id_ = 0;
+    queue_ready_ = false;
     g_logger_instance = nullptr;
     LOG_INFO("TimelineLogger stopped.");
 }
 
 void TimelineLogger::runMessageLoop() {
     thread_id_ = GetCurrentThreadId();
+    MSG bootstrap{};
+    PeekMessage(&bootstrap, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+    queue_ready_ = true;
 
     HWINEVENTHOOK hHookForeground = SetWinEventHook(
         EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
@@ -89,6 +104,8 @@ void TimelineLogger::runMessageLoop() {
     }
 
     if (hHookForeground) UnhookWinEvent(hHookForeground);
+    queue_ready_ = false;
+    thread_id_ = 0;
 }
 
 void CALLBACK TimelineLogger::WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime) {

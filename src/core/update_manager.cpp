@@ -14,6 +14,10 @@
 #include <QStandardPaths>
 #include <QDir>
 #include <QCoreApplication>
+#include <QFileInfo>
+#include <QSaveFile>
+#include <QTemporaryFile>
+#include <QUrl>
 
 #ifdef VISION_HAS_SPDLOG
 #include <spdlog/spdlog.h>
@@ -55,6 +59,8 @@ void UpdateManager::checkForUpdates() {
     QNetworkRequest request(api_url);
     request.setHeader(QNetworkRequest::UserAgentHeader, "VISION-AI-Updater/3.0");
     request.setRawHeader("Accept", "application/vnd.github.v3+json");
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
 
     QNetworkReply* reply = network_->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
@@ -96,12 +102,14 @@ void UpdateManager::onCheckFinished(QNetworkReply* reply) {
         return;
     }
 
-    // Find the installer asset (.exe or .zip)
+    // Only auto-install executable installers. Auto-downloading a ZIP and then
+    // launching it as if it were an installer causes false-positive "update
+    // ready" states and can quit the app without applying anything.
     QJsonArray assets = release.value("assets").toArray();
     for (const auto& asset_val : assets) {
         QJsonObject asset = asset_val.toObject();
         QString name = asset.value("name").toString().toLower();
-        if (name.endsWith(".exe") || name.endsWith(".zip")) {
+        if (name.endsWith(".exe")) {
             download_url_ = asset.value("browser_download_url").toString();
             break;
         }
@@ -109,7 +117,14 @@ void UpdateManager::onCheckFinished(QNetworkReply* reply) {
 
     if (download_url_.isEmpty()) {
         LOG_WARN("No installer asset found in release {}", tag_name.toStdString());
-        emit updateError("Update found but no installer asset available");
+        emit updateError("Update found but no .exe installer asset is available");
+        return;
+    }
+
+    QUrl download_url(download_url_);
+    if (!download_url.isValid() || download_url.scheme() != "https") {
+        LOG_ERROR("Rejected non-HTTPS update URL: {}", download_url_.toStdString());
+        emit updateError("Update URL is invalid or not HTTPS");
         return;
     }
 
@@ -126,8 +141,18 @@ void UpdateManager::onCheckFinished(QNetworkReply* reply) {
     QString temp_dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     QDir().mkpath(temp_dir);
 
-    QString filename = QUrl(download_url_).fileName();
-    download_path_ = temp_dir + "/" + filename;
+    QString file_suffix = QFileInfo(download_url.path()).suffix().toLower();
+    QString pattern = QDir(temp_dir).filePath(
+        QString("vision-ai-update-XXXXXX.%1").arg(file_suffix.isEmpty() ? "exe" : file_suffix));
+    QTemporaryFile tmp(pattern);
+    tmp.setAutoRemove(false);
+    if (!tmp.open()) {
+        LOG_ERROR("Failed to allocate temporary update file in {}", temp_dir.toStdString());
+        emit updateError("Cannot reserve a temporary file for the update");
+        return;
+    }
+    download_path_ = tmp.fileName();
+    tmp.close();
 
     LOG_INFO("Downloading update to: {}", download_path_.toStdString());
 
@@ -161,15 +186,26 @@ void UpdateManager::onDownloadFinished(QNetworkReply* reply) {
         return;
     }
 
-    QFile file(download_path_);
+    QByteArray payload = reply->readAll();
+    if (payload.isEmpty()) {
+        LOG_ERROR("Downloaded update payload is empty");
+        emit updateError("Downloaded update file is empty");
+        return;
+    }
+
+    QSaveFile file(download_path_);
     if (!file.open(QIODevice::WriteOnly)) {
         LOG_ERROR("Cannot write update file: {}", download_path_.toStdString());
         emit updateError("Cannot save update file");
         return;
     }
 
-    file.write(reply->readAll());
-    file.close();
+    qint64 written = file.write(payload);
+    if (written != payload.size() || !file.commit()) {
+        LOG_ERROR("Failed to commit update file: {}", download_path_.toStdString());
+        emit updateError("Cannot finalize update file");
+        return;
+    }
 
     download_progress_ = 100;
     LOG_INFO("Update downloaded successfully: {}", download_path_.toStdString());

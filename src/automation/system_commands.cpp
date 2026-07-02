@@ -90,8 +90,11 @@ SystemCommands::~SystemCommands() {
 
 std::wstring SystemCommands::toWide(const std::string& str) {
     int len = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
-    std::wstring wide(len - 1, 0);
+    if (len <= 0) return {};
+
+    std::wstring wide(len, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, wide.data(), len);
+    if (!wide.empty() && wide.back() == L'\0') wide.pop_back();
     return wide;
 }
 
@@ -268,11 +271,17 @@ std::pair<bool, std::string> SystemCommands::toggleWifi(bool enable) {
 
     if (CreateProcessW(netsh_path.c_str(), args.data(), nullptr, nullptr, FALSE,
                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        WaitForSingleObject(pi.hProcess, 5000);
+        DWORD wait_result = WaitForSingleObject(pi.hProcess, 5000);
+        DWORD exit_code = STILL_ACTIVE;
+        GetExitCodeProcess(pi.hProcess, &exit_code);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
+        if (wait_result != WAIT_OBJECT_0 || exit_code != 0) {
+            return {false, "Failed to toggle WiFi adapter state"};
+        }
+        return {true, std::string("WiFi ") + (enable ? "enabled" : "disabled")};
     }
-    return {true, std::string("WiFi ") + (enable ? "enabled" : "disabled")};
+    return {false, "Failed to launch WiFi control command"};
 }
 
 std::pair<bool, std::string> SystemCommands::toggleBluetooth(bool enable) {
@@ -643,8 +652,12 @@ void SystemCommands::startTimer(int seconds, const std::string& label) {
         if (app_closing_.load()) return;  // App is shutting down, skip notification
         Beep(1200, 500);
         int wlen = MultiByteToWideChar(CP_UTF8, 0, label.c_str(), -1, nullptr, 0);
-        std::wstring wlabel(wlen > 0 ? wlen - 1 : 0, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, label.c_str(), -1, wlabel.data(), wlen);
+        std::wstring wlabel;
+        if (wlen > 0) {
+            wlabel.assign(static_cast<size_t>(wlen), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, label.c_str(), -1, wlabel.data(), wlen);
+            if (!wlabel.empty() && wlabel.back() == L'\0') wlabel.pop_back();
+        }
         std::wstring msg = L"Timer done: " + wlabel;
         MessageBoxW(nullptr, msg.c_str(), L"VISION AI Timer", MB_OK | MB_ICONINFORMATION);
     });

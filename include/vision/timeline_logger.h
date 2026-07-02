@@ -46,6 +46,7 @@ public:
 private:
     std::thread hook_thread_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> queue_ready_{false};
     DWORD thread_id_ = 0;
     
     std::string log_file_path_;

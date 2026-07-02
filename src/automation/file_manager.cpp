@@ -32,6 +32,23 @@ using json = nlohmann::json;
 
 namespace vision {
 
+namespace {
+
+std::wstring utf8ToWidePath(const std::string& text) {
+    if (text.empty()) return {};
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    if (wlen <= 0) return {};
+
+    std::wstring wide(static_cast<size_t>(wlen), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), wlen);
+    if (!wide.empty() && wide.back() == L'\0') {
+        wide.pop_back();
+    }
+    return wide;
+}
+
+} // namespace
+
 FileManager::FileManager(SafetyGuard& guard)
     : guard_(guard) {}
 
@@ -119,17 +136,27 @@ std::vector<FileInfo> FileManager::listDocuments() {
 
 std::pair<bool, std::string> FileManager::copyFile(const std::string& src,
                                                      const std::string& dst) {
-    auto [ok, msg] = guard_.validateFileOperation("copy", dst);
-    if (!ok) return {false, msg};
+    auto [src_ok, src_msg] = guard_.validateFileOperation("copy", src);
+    if (!src_ok) return {false, "Copy blocked for source: " + src_msg};
+
+    auto [dst_ok, dst_msg] = guard_.validateFileOperation("copy", dst);
+    if (!dst_ok) return {false, "Copy blocked for destination: " + dst_msg};
     
     try {
         fs::path src_path(src);
         fs::path dst_path(dst);
+
+        if (!fs::exists(src_path)) {
+            return {false, "Source does not exist: " + src};
+        }
         
         if (fs::is_directory(src_path)) {
-            fs::copy(src_path, dst_path, fs::copy_options::recursive);
+            fs::copy(src_path, dst_path,
+                     fs::copy_options::recursive | fs::copy_options::overwrite_existing);
         } else {
-            fs::create_directories(dst_path.parent_path());
+            if (dst_path.has_parent_path()) {
+                fs::create_directories(dst_path.parent_path());
+            }
             fs::copy_file(src_path, dst_path, fs::copy_options::overwrite_existing);
         }
         
@@ -142,14 +169,25 @@ std::pair<bool, std::string> FileManager::copyFile(const std::string& src,
 
 std::pair<bool, std::string> FileManager::moveFile(const std::string& src,
                                                      const std::string& dst) {
-    auto [ok, msg] = guard_.validateFileOperation("move", src);
-    if (!ok) return {false, msg};
+    auto [src_ok, src_msg] = guard_.validateFileOperation("move", src);
+    if (!src_ok) return {false, "Move blocked for source: " + src_msg};
+
+    auto [dst_ok, dst_msg] = guard_.validateFileOperation("move", dst);
+    if (!dst_ok) return {false, "Move blocked for destination: " + dst_msg};
     
     try {
-        fs::create_directories(fs::path(dst).parent_path());
-        fs::rename(src, dst);
+        fs::path src_path(src);
+        fs::path dst_path(dst);
+
+        if (!fs::exists(src_path)) {
+            return {false, "Source does not exist: " + src};
+        }
+        if (dst_path.has_parent_path()) {
+            fs::create_directories(dst_path.parent_path());
+        }
+        fs::rename(src_path, dst_path);
         guard_.logAction("move", src + " -> " + dst, "success");
-        return {true, "Moved: " + fs::path(src).filename().string()};
+        return {true, "Moved: " + src_path.filename().string()};
     } catch (const std::exception& e) {
         return {false, "Move failed: " + std::string(e.what())};
     }
@@ -162,7 +200,16 @@ std::pair<bool, std::string> FileManager::renameFile(const std::string& path,
     
     try {
         fs::path old_p(path);
-        fs::path new_p = old_p.parent_path() / new_name;
+        fs::path requested_name(new_name);
+
+        if (new_name.empty() || requested_name.is_absolute() || requested_name.has_parent_path()) {
+            return {false, "Rename target must be a plain file or folder name"};
+        }
+
+        fs::path new_p = old_p.parent_path() / requested_name.filename();
+        auto [dst_ok, dst_msg] = guard_.validateFileOperation("rename", new_p.string());
+        if (!dst_ok) return {false, "Rename blocked for destination: " + dst_msg};
+
         fs::rename(old_p, new_p);
         guard_.logAction("rename", path + " -> " + new_name, "success");
         return {true, "Renamed to: " + new_name};
@@ -175,19 +222,22 @@ std::pair<bool, std::string> FileManager::deleteToRecycleBin(const std::string& 
     auto [ok, msg] = guard_.validateFileOperation("delete_recycle", path);
     if (!ok) return {false, msg};
     
-    // L1 fix: proper UTF-8 to UTF-16 conversion for paths
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    std::wstring wpath(wlen > 0 ? wlen : 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wlen);
-    // SHFileOperation needs double null termination (already has one from wstring)
+    std::wstring wpath = utf8ToWidePath(path);
+    if (wpath.empty()) {
+        return {false, "Failed to encode path for recycle bin operation"};
+    }
+
+    std::vector<wchar_t> from_buffer(wpath.begin(), wpath.end());
+    from_buffer.push_back(L'\0');
+    from_buffer.push_back(L'\0');
     
     SHFILEOPSTRUCTW op{};
     op.wFunc = FO_DELETE;
-    op.pFrom = wpath.c_str();
+    op.pFrom = from_buffer.data();
     op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT;
     
     int result = SHFileOperationW(&op);
-    if (result == 0) {
+    if (result == 0 && !op.fAnyOperationsAborted) {
         guard_.logAction("delete_recycle", path, "success");
         return {true, "Moved to recycle bin: " + fs::path(path).filename().string()};
     }
