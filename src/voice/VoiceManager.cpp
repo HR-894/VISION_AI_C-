@@ -1,17 +1,16 @@
 // =============================================================================
 // VISION AI - VoiceManager.cpp
 // Orchestrates AudioCapture -> WhisperEngine -> UI pipeline
-// Manages state machine: Idle -> Listening -> Processing -> Idle
+// Manages state machine: Idle -> Listening -> Processing -> Idle (No Qt)
 // =============================================================================
 #include "VoiceManager.h"
 #include "AudioCapture.h"
 #include "WhisperEngine.h"
 
-#include <QDebug>
-#include <QMetaObject>
-#include <thread>
+#include <spdlog/spdlog.h>
 #include <chrono>
 #include <algorithm>
+#include <cctype>
 
 namespace vision::voice {
 
@@ -19,32 +18,24 @@ namespace vision::voice {
 // Construction / Destruction
 // =========================================================================
 
-VoiceManager::VoiceManager(QObject* parent)
-    : QObject(parent)
-    , m_audioCapture(std::make_unique<AudioCapture>(this))
-    , m_whisperEngine(std::make_unique<WhisperEngine>(this))
+VoiceManager::VoiceManager()
+    : m_audioCapture(std::make_unique<AudioCapture>())
+    , m_whisperEngine(std::make_unique<WhisperEngine>())
 {
-    // Wire AudioCapture signals
-    connect(m_audioCapture.get(), &AudioCapture::speechStarted,
-            this, &VoiceManager::onSpeechStarted);
-    connect(m_audioCapture.get(), &AudioCapture::speechEnded,
-            this, &VoiceManager::onSpeechEnded);
-    connect(m_audioCapture.get(), &AudioCapture::audioLevelChanged,
-            this, &VoiceManager::onAudioLevel);
-    connect(m_audioCapture.get(), &AudioCapture::captureError,
-            this, [this](const QString& err) {
-                qWarning() << "[VoiceManager] Capture error:" << err;
-                emit error(err);
-                setState(VoiceState::Error);
-            });
+    // Wire AudioCapture callbacks
+    m_audioCapture->onSpeechStarted = [this]() { onSpeechStartedCallback(); };
+    m_audioCapture->onSpeechEnded = [this](int durationMs) { onSpeechEndedCallback(durationMs); };
+    m_audioCapture->onAudioLevelChanged = [this](float rms) { onAudioLevelCallback(rms); };
+    m_audioCapture->onCaptureError = [this](const std::string& err) {
+        spdlog::warn("[VoiceManager] Capture error: {}", err);
+        if (onError) onError(err);
+        setState(VoiceState::Error);
+    };
 
-    // Wire WhisperEngine signals
-    connect(m_whisperEngine.get(), &WhisperEngine::partialTranscription,
-            this, &VoiceManager::onPartialTranscription);
-    connect(m_whisperEngine.get(), &WhisperEngine::finalTranscription,
-            this, &VoiceManager::onFinalTranscription);
-    connect(m_whisperEngine.get(), &WhisperEngine::engineError,
-            this, &VoiceManager::onEngineError);
+    // Wire WhisperEngine callbacks
+    m_whisperEngine->onPartialTranscription = [this](const std::string& text) { onPartialTranscriptionCallback(text); };
+    m_whisperEngine->onFinalTranscription = [this](const std::string& text, float conf) { onFinalTranscriptionCallback(text, conf); };
+    m_whisperEngine->onEngineError = [this](const std::string& err) { onEngineErrorCallback(err); };
 }
 
 VoiceManager::~VoiceManager()
@@ -58,36 +49,32 @@ VoiceManager::~VoiceManager()
 
 bool VoiceManager::initialize(const std::string& whisperModelPath)
 {
-    qInfo() << "[VoiceManager] Initializing with model:"
-            << QString::fromStdString(whisperModelPath);
+    spdlog::info("[VoiceManager] Initializing with model: {}", whisperModelPath);
 
-    // Initialize audio capture (PortAudio)
     if (!m_audioCapture->initialize()) {
-        emit error("Failed to initialize audio capture.");
+        if (onError) onError("Failed to initialize audio capture.");
         return false;
     }
 
-    // Load whisper model
     WhisperConfig config;
     config.modelPath    = whisperModelPath;
     config.language     = "en";
-    config.chunkMs      = 800;       // Process every 800ms during streaming
-    config.slidingWindowMs = 2000;   // 2-second sliding window for context
-    config.beamSize     = 2;         // Fast beam for partials
+    config.chunkMs      = 800;       
+    config.slidingWindowMs = 2000;   
+    config.beamSize     = 2;         
     config.bestOf       = 1;
     config.threads      = std::max(1u, std::thread::hardware_concurrency() / 4);
     config.noTimestamps = true;
     config.singleSegment = true;
 
     if (!m_whisperEngine->loadModel(config)) {
-        emit error("Failed to load whisper model.");
+        if (onError) onError("Failed to load whisper model.");
         return false;
     }
 
     m_initialized = true;
-    qInfo() << "[VoiceManager] Initialization complete.";
+    spdlog::info("[VoiceManager] Initialization complete.");
     
-    // Auto-start wake-word listener
     startWakeWordListener();
     return true;
 }
@@ -103,7 +90,7 @@ void VoiceManager::shutdown()
     m_initialized = false;
     setState(VoiceState::Idle);
 
-    qInfo() << "[VoiceManager] Shutdown complete.";
+    spdlog::info("[VoiceManager] Shutdown complete.");
 }
 
 // =========================================================================
@@ -112,70 +99,68 @@ void VoiceManager::shutdown()
 
 void VoiceManager::startListening()
 {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+
     if (!m_initialized) {
-        emit error("VoiceManager not initialized. Call initialize() first.");
+        if (onError) onError("VoiceManager not initialized. Call initialize() first.");
         return;
     }
 
     if (m_state.load(std::memory_order_acquire) == VoiceState::Listening) {
-        qDebug() << "[VoiceManager] Already listening.";
+        spdlog::debug("[VoiceManager] Already listening.");
         return;
     }
 
     if (m_state.load(std::memory_order_acquire) == VoiceState::Processing) {
-        qDebug() << "[VoiceManager] Still processing previous input. Aborting.";
+        spdlog::debug("[VoiceManager] Still processing previous input. Aborting.");
         m_whisperEngine->abort();
     }
 
-    // Clear previous state
     m_accumulatedPartialText.clear();
 
-    // Start recording
     if (!m_audioCapture->startRecording()) {
-        emit error("Failed to start audio recording.");
+        if (onError) onError("Failed to start audio recording.");
         setState(VoiceState::Error);
         return;
     }
 
-    // Start streaming transcription worker
     m_whisperEngine->startStreaming(m_audioCapture.get());
 
     setState(VoiceState::Listening);
-    qInfo() << "[VoiceManager] Listening started.";
+    spdlog::info("[VoiceManager] Listening started.");
 }
 
 void VoiceManager::stopListening()
 {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+
     if (m_state.load(std::memory_order_acquire) != VoiceState::Listening) {
         return;
     }
 
-    qInfo() << "[VoiceManager] Stop listening -> running final pass...";
+    spdlog::info("[VoiceManager] Stop listening -> running final pass...");
 
-    // Stop streaming worker first
     m_whisperEngine->stopStreaming();
-
-    // Stop recording (this also captures the final VAD state)
     m_audioCapture->stopRecording();
 
-    // Run final high-accuracy transcription pass
     setState(VoiceState::Processing);
     runFinalPass();
 }
 
 void VoiceManager::toggleListening()
 {
-    VoiceState current = m_state.load(std::memory_order_acquire);
+    VoiceState current = state(); // Doesn't lock, safe for atomics
     if (current == VoiceState::Idle || current == VoiceState::Error) {
         startListening();
     } else if (current == VoiceState::Listening) {
         stopListening();
     }
-    // If Processing, do nothing — let it finish
 }
 
 void VoiceManager::abortListening()
 {
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+
     VoiceState current = m_state.load(std::memory_order_acquire);
     if (current == VoiceState::Idle) return;
 
@@ -185,9 +170,8 @@ void VoiceManager::abortListening()
     m_accumulatedPartialText.clear();
 
     setState(VoiceState::Idle);
-    qInfo() << "[VoiceManager] Listening aborted.";
+    spdlog::info("[VoiceManager] Listening aborted.");
     
-    // Resume background audio if wake word is active
     if (m_wakeWordRunning) {
         m_audioCapture->startRecording();
     }
@@ -201,13 +185,12 @@ void VoiceManager::startWakeWordListener()
 {
     if (m_wakeWordRunning.exchange(true)) return;
     
-    // Ensure capture is running
     if (!m_audioCapture->isRecording() && state() == VoiceState::Idle) {
         m_audioCapture->startRecording();
     }
     
     m_wakeWordThread = std::make_unique<std::thread>(&VoiceManager::wakeWordLoop, this);
-    qInfo() << "[VoiceManager] Wake-Word listener started.";
+    spdlog::info("[VoiceManager] Wake-Word listener started.");
 }
 
 void VoiceManager::stopWakeWordListener()
@@ -224,14 +207,11 @@ void VoiceManager::wakeWordLoop()
     while (m_wakeWordRunning) {
         std::this_thread::sleep_for(std::chrono::milliseconds(400));
         
-        // Skip wake word check if already actively listening or processing
         if (state() != VoiceState::Idle) continue;
         
-        // We only care about the very recent audio tail
         auto audio = m_audioCapture->getLastNSeconds(1.2f);
-        if (audio.size() < 16000 * 0.8) continue; // Minimum 0.8s
+        if (audio.size() < 16000 * 0.8) continue;
         
-        // Fast decode without high accuracy
         auto result = m_whisperEngine->transcribe(audio, false);
         std::string text = result.text;
         std::transform(text.begin(), text.end(), text.begin(), ::tolower);
@@ -240,16 +220,12 @@ void VoiceManager::wakeWordLoop()
             text.find("vision awake") != std::string::npos ||
             text.find("hey listen") != std::string::npos) {
             
-            qInfo() << "[VoiceManager] Wake-Word Detected! Text: " << QString::fromStdString(text);
+            spdlog::info("[VoiceManager] Wake-Word Detected! Text: {}", text);
             
-            // Hop to main thread to start listening cleanly
-            QMetaObject::invokeMethod(this, [this]() {
-                if (state() == VoiceState::Idle) {
-                    startListening();
-                }
-            }, Qt::QueuedConnection);
+            if (state() == VoiceState::Idle) {
+                startListening();
+            }
             
-            // Sleep to debounce
             std::this_thread::sleep_for(std::chrono::seconds(2));
         }
     }
@@ -306,9 +282,8 @@ void VoiceManager::setState(VoiceState newState)
 {
     VoiceState old = m_state.exchange(newState, std::memory_order_acq_rel);
     if (old != newState) {
-        qDebug() << "[VoiceManager] State:" << static_cast<int>(old)
-                  << "->" << static_cast<int>(newState);
-        emit stateChanged(newState);
+        spdlog::debug("[VoiceManager] State: {} -> {}", static_cast<int>(old), static_cast<int>(newState));
+        if (onStateChanged) onStateChanged(newState);
     }
 }
 
@@ -318,79 +293,68 @@ void VoiceManager::setState(VoiceState newState)
 
 void VoiceManager::runFinalPass()
 {
-    // Get the full recording from the AudioCapture buffer
-    std::vector<float> fullAudio = m_audioCapture->getFullRecording();
+    auto vadState = m_audioCapture->getVADState();
+    float durationSec = vadState.speechDurationMs / 1000.0f + 1.0f; // Add 1s padding
+    durationSec = std::min(durationSec, static_cast<float>(vision::voice::RING_BUFFER_SECONDS));
+    
+    std::vector<float> fullAudio = m_audioCapture->getLastNSeconds(durationSec);
 
     if (fullAudio.empty()) {
-        qInfo() << "[VoiceManager] No audio captured. Returning to idle.";
+        spdlog::info("[VoiceManager] No audio captured. Returning to idle.");
         setState(VoiceState::Idle);
         return;
     }
 
-    float durationSec = static_cast<float>(fullAudio.size()) / SAMPLE_RATE;
-    qInfo() << "[VoiceManager] Running final transcription pass on"
-            << durationSec << "seconds of audio...";
+    float actualDurationSec = static_cast<float>(fullAudio.size()) / vision::voice::SAMPLE_RATE;
+    spdlog::info("[VoiceManager] Running final transcription pass on {} seconds of audio...", actualDurationSec);
 
-    // Minimum 300ms of audio for final pass
-    if (fullAudio.size() < SAMPLE_RATE * 3 / 10) {
-        qInfo() << "[VoiceManager] Audio too short (" << durationSec
-                << "s). Using partial text.";
+    if (fullAudio.size() < vision::voice::SAMPLE_RATE * 3 / 10) {
+        spdlog::info("[VoiceManager] Audio too short ({}s). Using partial text.", actualDurationSec);
         if (!m_accumulatedPartialText.empty()) {
-            emit finalText(QString::fromStdString(m_accumulatedPartialText));
+            if (onFinalText) onFinalText(m_accumulatedPartialText);
         }
         setState(VoiceState::Idle);
         return;
     }
 
-    // Run async high-accuracy transcription
-    // The signal will come back via onFinalTranscription()
-    m_whisperEngine->transcribeAsync(fullAudio, true /* highAccuracy */);
+    m_whisperEngine->transcribeAsync(fullAudio, true);
 }
 
 // =========================================================================
-// Slots: AudioCapture Events
+// Callbacks
 // =========================================================================
 
-void VoiceManager::onSpeechStarted()
+void VoiceManager::onSpeechStartedCallback()
 {
-    emit speechDetected();
+    if (onSpeechDetected) onSpeechDetected();
 }
 
-void VoiceManager::onSpeechEnded(int durationMs)
+void VoiceManager::onSpeechEndedCallback(int durationMs)
 {
-    emit silenceDetected(durationMs);
-
-    // In future: could auto-stop listening after prolonged silence
-    // For now, we rely on explicit stop (hotkey release)
+    if (onSilenceDetected) onSilenceDetected(durationMs);
 }
 
-void VoiceManager::onAudioLevel(float rms)
+void VoiceManager::onAudioLevelCallback(float rms)
 {
-    emit audioLevel(rms);
+    if (onAudioLevel) onAudioLevel(rms);
 }
 
-// =========================================================================
-// Slots: WhisperEngine Events
-// =========================================================================
-
-void VoiceManager::onPartialTranscription(const QString& text)
+void VoiceManager::onPartialTranscriptionCallback(const std::string& text)
 {
-    m_accumulatedPartialText = text.toStdString();
-
-    // Forward to UI for live text field update
-    emit partialText(text);
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    m_accumulatedPartialText = text;
+    if (onPartialText) onPartialText(text);
 }
 
-void VoiceManager::onFinalTranscription(const QString& text, float confidence)
+void VoiceManager::onFinalTranscriptionCallback(const std::string& text, float confidence)
 {
-    qInfo() << "[VoiceManager] Final transcription received:"
-            << text.size() << "chars, confidence:" << confidence;
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    spdlog::info("[VoiceManager] Final transcription received: {} chars, confidence: {}", text.size(), confidence);
 
-    // Use the final text if it's non-empty, otherwise fall back to last partial
-    if (!text.isEmpty()) {
-        emit finalText(text);
+    if (!text.empty()) {
+        if (onFinalText) onFinalText(text);
     } else if (!m_accumulatedPartialText.empty()) {
-        emit finalText(QString::fromStdString(m_accumulatedPartialText));
+        if (onFinalText) onFinalText(m_accumulatedPartialText);
     }
 
     m_accumulatedPartialText.clear();
@@ -401,15 +365,15 @@ void VoiceManager::onFinalTranscription(const QString& text, float confidence)
     }
 }
 
-void VoiceManager::onEngineError(const QString& err)
+void VoiceManager::onEngineErrorCallback(const std::string& err)
 {
-    qWarning() << "[VoiceManager] Engine error:" << err;
-    emit error(err);
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    spdlog::warn("[VoiceManager] Engine error: {}", err);
+    if (onError) onError(err);
 
-    // If we were processing, fall back to partial text
     if (m_state.load(std::memory_order_acquire) == VoiceState::Processing) {
         if (!m_accumulatedPartialText.empty()) {
-            emit finalText(QString::fromStdString(m_accumulatedPartialText));
+            if (onFinalText) onFinalText(m_accumulatedPartialText);
         }
     }
 

@@ -1,12 +1,11 @@
 // =============================================================================
 // VISION AI - AudioCapture.cpp
-// PortAudio-based microphone capture with lock-free ring buffer + VAD
+// PortAudio-based microphone capture with lock-free ring buffer + VAD (No Qt)
 // =============================================================================
 #include "AudioCapture.h"
 
-#include <QDebug>
-#include <QDateTime>
-
+#include <spdlog/spdlog.h>
+#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -30,14 +29,12 @@ AudioRingBuffer::AudioRingBuffer()
 
 void AudioRingBuffer::write(const float* data, size_t sampleCount) noexcept
 {
-    // Called from PortAudio real-time thread — must be lock-free.
     size_t writePos = m_writePos.load(std::memory_order_relaxed);
 
     for (size_t i = 0; i < sampleCount; ++i) {
         m_buffer[(writePos + i) % RING_BUFFER_SAMPLES] = data[i];
     }
 
-    // Single atomic store — makes all writes visible to consumer
     m_writePos.store(writePos + sampleCount, std::memory_order_release);
 }
 
@@ -45,7 +42,6 @@ size_t AudioRingBuffer::readLast(float* output, size_t sampleCount) const noexce
 {
     size_t writePos = m_writePos.load(std::memory_order_acquire);
 
-    // Clamp to available data
     size_t available = std::min(sampleCount, writePos);
     if (available == 0) return 0;
 
@@ -67,7 +63,6 @@ size_t AudioRingBuffer::readNew(float* output, size_t maxSamples) noexcept
     size_t newSamples = writePos - m_readPos;
     size_t toRead = std::min(newSamples, maxSamples);
 
-    // If consumer fell behind by more than the buffer size, skip ahead
     if (newSamples > RING_BUFFER_SAMPLES) {
         m_readPos = writePos - RING_BUFFER_SAMPLES;
         newSamples = RING_BUFFER_SAMPLES;
@@ -103,8 +98,7 @@ void AudioRingBuffer::clear() noexcept
 // AudioCapture: Construction / Destruction
 // =========================================================================
 
-AudioCapture::AudioCapture(QObject* parent)
-    : QObject(parent)
+AudioCapture::AudioCapture()
 {
 }
 
@@ -120,24 +114,21 @@ AudioCapture::~AudioCapture()
 bool AudioCapture::initialize()
 {
 #ifdef VISION_NO_PORTAUDIO
-    qWarning() << "[AudioCapture] PortAudio not available.";
-    emit captureError("PortAudio library not available.");
+    spdlog::warn("[AudioCapture] PortAudio not available.");
+    notifyError("PortAudio library not available.");
     return false;
 #else
     if (m_initialized.load(std::memory_order_acquire)) return true;
 
     PaError err = Pa_Initialize();
     if (err != paNoError) {
-        qCritical() << "[AudioCapture] Pa_Initialize failed:"
-                     << Pa_GetErrorText(err);
-        emit captureError(QString("PortAudio init failed: %1")
-                              .arg(Pa_GetErrorText(err)));
+        spdlog::critical("[AudioCapture] Pa_Initialize failed: {}", Pa_GetErrorText(err));
+        notifyError(std::string("PortAudio init failed: ") + Pa_GetErrorText(err));
         return false;
     }
 
     m_initialized.store(true, std::memory_order_release);
-    qInfo() << "[AudioCapture] PortAudio initialized. Version:"
-            << Pa_GetVersionText();
+    spdlog::info("[AudioCapture] PortAudio initialized. Version: {}", Pa_GetVersionText());
 
     return true;
 #endif
@@ -151,7 +142,7 @@ void AudioCapture::shutdown()
     if (m_initialized.load(std::memory_order_acquire)) {
         Pa_Terminate();
         m_initialized.store(false, std::memory_order_release);
-        qInfo() << "[AudioCapture] PortAudio terminated.";
+        spdlog::info("[AudioCapture] PortAudio terminated.");
     }
 #endif
 }
@@ -170,37 +161,28 @@ bool AudioCapture::startRecording()
     }
 
     if (m_recording.load(std::memory_order_acquire)) {
-        qWarning() << "[AudioCapture] Already recording.";
+        spdlog::warn("[AudioCapture] Already recording.");
         return true;
     }
 
-    // Clear buffers
     m_ringBuffer.clear();
-    {
-        QMutexLocker lock(&m_fullRecMutex);
-        m_fullRecording.clear();
-        m_fullRecording.reserve(SAMPLE_RATE * 60);  // Pre-alloc 60 seconds
-    }
 
-    // Reset VAD
-    m_vadState = VADState{};
+    m_vadIsSpeechActive.store(false, std::memory_order_relaxed);
     m_vadHoldCounter = 0;
 
-    // Open stream
     PaStreamParameters inputParams{};
     inputParams.device = (m_deviceIndex >= 0)
         ? m_deviceIndex
         : Pa_GetDefaultInputDevice();
 
     if (inputParams.device == paNoDevice) {
-        emit captureError("No input audio device found.");
+        notifyError("No input audio device found.");
         return false;
     }
 
     inputParams.channelCount = CHANNELS;
     inputParams.sampleFormat = paFloat32;
-    inputParams.suggestedLatency =
-        Pa_GetDeviceInfo(inputParams.device)->defaultLowInputLatency;
+    inputParams.suggestedLatency = Pa_GetDeviceInfo(inputParams.device)->defaultLowInputLatency;
     inputParams.hostApiSpecificStreamInfo = nullptr;
 
     PaError err = Pa_OpenStream(
@@ -211,14 +193,12 @@ bool AudioCapture::startRecording()
         FRAMES_PER_CHUNK,
         paClipOff,          // Don't clip
         reinterpret_cast<PaStreamCallback*>(&AudioCapture::paStreamCallback),
-        this                // userData = this
+        this
     );
 
     if (err != paNoError) {
-        qCritical() << "[AudioCapture] Pa_OpenStream failed:"
-                     << Pa_GetErrorText(err);
-        emit captureError(QString("Failed to open audio stream: %1")
-                              .arg(Pa_GetErrorText(err)));
+        spdlog::critical("[AudioCapture] Pa_OpenStream failed: {}", Pa_GetErrorText(err));
+        notifyError(std::string("Failed to open audio stream: ") + Pa_GetErrorText(err));
         return false;
     }
 
@@ -226,16 +206,13 @@ bool AudioCapture::startRecording()
     if (err != paNoError) {
         Pa_CloseStream(reinterpret_cast<PaStream*>(m_paStream));
         m_paStream = nullptr;
-        qCritical() << "[AudioCapture] Pa_StartStream failed:"
-                     << Pa_GetErrorText(err);
-        emit captureError(QString("Failed to start audio stream: %1")
-                              .arg(Pa_GetErrorText(err)));
+        spdlog::critical("[AudioCapture] Pa_StartStream failed: {}", Pa_GetErrorText(err));
+        notifyError(std::string("Failed to start audio stream: ") + Pa_GetErrorText(err));
         return false;
     }
 
     m_recording.store(true, std::memory_order_release);
-    qInfo() << "[AudioCapture] Recording started on device"
-            << inputParams.device;
+    spdlog::info("[AudioCapture] Recording started on device {}", inputParams.device);
 
     return true;
 #endif
@@ -254,14 +231,15 @@ void AudioCapture::stopRecording()
         m_paStream = nullptr;
     }
 
-    // If speech was active, emit speechEnded
-    if (m_vadState.isSpeechActive) {
-        int duration = static_cast<int>(m_vadState.speechDurationMs);
-        m_vadState.isSpeechActive = false;
-        emit speechEnded(duration);
+    if (m_vadIsSpeechActive.load(std::memory_order_relaxed)) {
+        int duration = static_cast<int>(m_vadSpeechDurationMs.load(std::memory_order_relaxed));
+        m_vadIsSpeechActive.store(false, std::memory_order_relaxed);
+        if (onSpeechEnded) {
+            onSpeechEnded(duration);
+        }
     }
 
-    qInfo() << "[AudioCapture] Recording stopped.";
+    spdlog::info("[AudioCapture] Recording stopped.");
 #endif
 }
 
@@ -295,24 +273,26 @@ std::vector<float> AudioCapture::getNewAudio()
     return output;
 }
 
-std::vector<float> AudioCapture::getFullRecording() const
-{
-    QMutexLocker lock(&m_fullRecMutex);
-    return m_fullRecording;  // Copy
-}
-
 // =========================================================================
 // VAD
 // =========================================================================
 
-const VADState& AudioCapture::getVADState() const noexcept
+VADState AudioCapture::getVADState() const noexcept
 {
-    return m_vadState;
+    VADState state;
+    state.isSpeechActive = m_vadIsSpeechActive.load(std::memory_order_relaxed);
+    state.currentEnergy = m_vadCurrentEnergy.load(std::memory_order_relaxed);
+    state.peakEnergy = m_vadPeakEnergy.load(std::memory_order_relaxed);
+    state.speechStartMs = m_vadSpeechStartMs.load(std::memory_order_relaxed);
+    state.speechDurationMs = m_vadSpeechDurationMs.load(std::memory_order_relaxed);
+    state.noiseFloor = m_vadNoiseFloor.load(std::memory_order_relaxed);
+    state.threshold = m_vadThreshold.load(std::memory_order_relaxed);
+    return state;
 }
 
 void AudioCapture::setVADThreshold(float threshold)
 {
-    m_vadState.threshold = std::max(0.0001f, threshold);
+    m_vadThreshold.store(std::max(0.0001f, threshold), std::memory_order_relaxed);
 }
 
 void AudioCapture::setVADEnabled(bool enabled)
@@ -329,7 +309,6 @@ std::vector<AudioCapture::AudioDevice> AudioCapture::listInputDevices()
     std::vector<AudioDevice> devices;
 
 #ifndef VISION_NO_PORTAUDIO
-    // Ensure PA is initialized temporarily
     bool wasInit = (Pa_Initialize() == paNoError);
 
     int defaultDevice = Pa_GetDefaultInputDevice();
@@ -360,7 +339,7 @@ void AudioCapture::setInputDevice(int deviceIndex)
 }
 
 // =========================================================================
-// PortAudio Stream Callback (REAL-TIME — no allocations, no locks, no Qt)
+// PortAudio Stream Callback (REAL-TIME)
 // =========================================================================
 
 int AudioCapture::paStreamCallback(
@@ -378,82 +357,65 @@ int AudioCapture::paStreamCallback(
     const float* samples = static_cast<const float*>(inputBuffer);
     size_t count = static_cast<size_t>(framesPerBuffer);
 
-    // Write to lock-free ring buffer (real-time safe)
     self->m_ringBuffer.write(samples, count);
-
-    // Accumulate into full recording buffer
-    // NOTE: This mutex is the only non-RT-safe operation. In practice the
-    // consumer (getFullRecording) is only called once at the end, so contention
-    // is near-zero. For absolute RT safety, this could be replaced with a
-    // second lock-free queue, but the complexity isn't worth it for this use case.
-    {
-        QMutexLocker lock(&self->m_fullRecMutex);
-        self->m_fullRecording.insert(
-            self->m_fullRecording.end(), samples, samples + count);
-    }
-
-    // Process VAD (cheap — just RMS energy computation)
     self->processVAD(samples, count);
 
     return paContinue;
 }
-
-// =========================================================================
-// VAD Processing
-// =========================================================================
 
 void AudioCapture::processVAD(const float* samples, size_t count)
 {
     if (!m_vadEnabled) return;
 
     float energy = computeRMSEnergy(samples, count);
-    m_vadState.currentEnergy = energy;
+    m_vadCurrentEnergy.store(energy, std::memory_order_relaxed);
 
-    // Update noise floor estimate
     updateNoiseFloor(energy);
 
-    // Adaptive threshold: 3x noise floor, but at least the configured minimum
-    float adaptiveThreshold = std::max(m_vadState.threshold,
-                                        m_vadState.noiseFloor * 3.0f);
+    float noiseFloor = m_vadNoiseFloor.load(std::memory_order_relaxed);
+    float configuredThreshold = m_vadThreshold.load(std::memory_order_relaxed);
+    float adaptiveThreshold = std::max(configuredThreshold, noiseFloor * 3.0f);
 
-    // Emit audio level for VU meter (called from callback — will be queued)
-    emit audioLevelChanged(energy);
+    if (onAudioLevelChanged) {
+        onAudioLevelChanged(energy);
+    }
 
     bool speechDetected = (energy > adaptiveThreshold);
 
-    if (speechDetected) {
-        m_vadHoldCounter = VAD_HOLD_FRAMES;  // Reset hold timer
+    auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
 
-        if (!m_vadState.isSpeechActive) {
-            // Speech onset
-            m_vadState.isSpeechActive = true;
-            m_vadState.speechStartMs = QDateTime::currentMSecsSinceEpoch();
-            m_vadState.peakEnergy = energy;
-            emit speechStarted();
+    if (speechDetected) {
+        m_vadHoldCounter = VAD_HOLD_FRAMES;
+
+        if (!m_vadIsSpeechActive.load(std::memory_order_relaxed)) {
+            m_vadIsSpeechActive.store(true, std::memory_order_relaxed);
+            m_vadSpeechStartMs.store(now, std::memory_order_relaxed);
+            m_vadPeakEnergy.store(energy, std::memory_order_relaxed);
+            if (onSpeechStarted) {
+                onSpeechStarted();
+            }
         } else {
-            // Continuing speech
-            m_vadState.peakEnergy = std::max(m_vadState.peakEnergy, energy);
-            m_vadState.speechDurationMs =
-                QDateTime::currentMSecsSinceEpoch() - m_vadState.speechStartMs;
+            float currentPeak = m_vadPeakEnergy.load(std::memory_order_relaxed);
+            m_vadPeakEnergy.store(std::max(currentPeak, energy), std::memory_order_relaxed);
+            m_vadSpeechDurationMs.store(now - m_vadSpeechStartMs.load(std::memory_order_relaxed), std::memory_order_relaxed);
         }
-    } else if (m_vadState.isSpeechActive) {
-        // Speech might be ending — use hold timer to bridge brief pauses
+    } else if (m_vadIsSpeechActive.load(std::memory_order_relaxed)) {
         m_vadHoldCounter--;
-        m_vadState.speechDurationMs =
-            QDateTime::currentMSecsSinceEpoch() - m_vadState.speechStartMs;
+        m_vadSpeechDurationMs.store(now - m_vadSpeechStartMs.load(std::memory_order_relaxed), std::memory_order_relaxed);
 
         if (m_vadHoldCounter <= 0) {
-            // Speech ended
-            int duration = static_cast<int>(m_vadState.speechDurationMs);
-            m_vadState.isSpeechActive = false;
-            m_vadState.peakEnergy = 0.0f;
-            emit speechEnded(duration);
+            int duration = static_cast<int>(m_vadSpeechDurationMs.load(std::memory_order_relaxed));
+            m_vadIsSpeechActive.store(false, std::memory_order_relaxed);
+            m_vadPeakEnergy.store(0.0f, std::memory_order_relaxed);
+            if (onSpeechEnded) {
+                onSpeechEnded(duration);
+            }
         }
     }
 }
 
-float AudioCapture::computeRMSEnergy(
-    const float* samples, size_t count) noexcept
+float AudioCapture::computeRMSEnergy(const float* samples, size_t count) noexcept
 {
     if (count == 0) return 0.0f;
 
@@ -461,19 +423,21 @@ float AudioCapture::computeRMSEnergy(
     for (size_t i = 0; i < count; ++i) {
         sum += samples[i] * samples[i];
     }
-
     return std::sqrt(sum / static_cast<float>(count));
 }
 
 void AudioCapture::updateNoiseFloor(float energy) noexcept
 {
-    // Exponential moving average with very slow decay
-    // Only update when energy is below current estimate * 2
-    // (avoids corrupting noise floor during speech)
-    if (energy < m_vadState.noiseFloor * 2.0f) {
-        constexpr float alpha = 0.005f;  // Very slow adaptation
-        m_vadState.noiseFloor =
-            m_vadState.noiseFloor * (1.0f - alpha) + energy * alpha;
+    float currentFloor = m_vadNoiseFloor.load(std::memory_order_relaxed);
+    if (energy < currentFloor * 2.0f) {
+        constexpr float alpha = 0.005f; 
+        m_vadNoiseFloor.store(currentFloor * (1.0f - alpha) + energy * alpha, std::memory_order_relaxed);
+    }
+}
+
+void AudioCapture::notifyError(const std::string& err) {
+    if (onCaptureError) {
+        onCaptureError(err);
     }
 }
 

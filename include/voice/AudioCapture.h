@@ -1,12 +1,9 @@
 // =============================================================================
 // VISION AI - AudioCapture.h
 // Thread-safe audio capture with lock-free circular buffer + VAD
-// Uses PortAudio for cross-device microphone input
+// Uses PortAudio for cross-device microphone input (No Qt)
 // =============================================================================
 #pragma once
-
-#include <QObject>
-#include <QMutex>
 
 #include <string>
 #include <vector>
@@ -44,7 +41,7 @@ struct VADState {
     float   peakEnergy      = 0.0f;     // Peak energy in this utterance
     int64_t speechStartMs   = 0;        // When speech started (epoch ms)
     int64_t speechDurationMs = 0;       // How long speech has been active
-
+    
     // Adaptive threshold (adjusts to ambient noise over time)
     float   noiseFloor      = 0.001f;
     float   threshold       = VAD_ENERGY_THRESHOLD;
@@ -53,46 +50,31 @@ struct VADState {
 // -------------------------------------------------------------------------
 // Circular Buffer (Lock-Free SPSC for audio callback -> reader thread)
 // -------------------------------------------------------------------------
-// Single-Producer (PortAudio callback) / Single-Consumer (WhisperEngine)
-// Uses atomic counters — no mutex needed in the hot path.
-// -------------------------------------------------------------------------
 class AudioRingBuffer {
 public:
     AudioRingBuffer();
 
-    // Producer: called from PortAudio callback (real-time safe)
     void write(const float* data, size_t sampleCount) noexcept;
-
-    // Consumer: copy the last N samples into output buffer
-    // Returns actual number of samples copied (may be less than requested)
     size_t readLast(float* output, size_t sampleCount) const noexcept;
-
-    // Consumer: copy all samples since the last call to readNew()
     size_t readNew(float* output, size_t maxSamples) noexcept;
-
-    // Total samples written since construction/clear
+    
     [[nodiscard]] size_t totalWritten() const noexcept;
-
-    // Available unread samples
     [[nodiscard]] size_t available() const noexcept;
-
     void clear() noexcept;
 
 private:
     std::array<float, RING_BUFFER_SAMPLES> m_buffer{};
-    std::atomic<size_t> m_writePos{0};     // Monotonically increasing write cursor
-    size_t              m_readPos = 0;      // Consumer read cursor (not atomic — single consumer)
+    std::atomic<size_t> m_writePos{0};     
+    size_t              m_readPos = 0;      
 };
 
 // -------------------------------------------------------------------------
 // AudioCapture - Main Class
 // -------------------------------------------------------------------------
-class AudioCapture : public QObject {
-    Q_OBJECT
-
+class AudioCapture {
 public:
-    explicit AudioCapture(QObject* parent = nullptr);
-    ~AudioCapture() override;
+    explicit AudioCapture();
+    ~AudioCapture();
 
     // Non-copyable
     AudioCapture(const AudioCapture&) = delete;
@@ -108,17 +90,12 @@ public:
     [[nodiscard]] bool isRecording() const noexcept;
 
     // === Data Access ===
-    // Get the last N seconds of audio from the ring buffer
     [[nodiscard]] std::vector<float> getLastNSeconds(float seconds) const;
-
     // Get all new audio since last call (for streaming consumer)
     [[nodiscard]] std::vector<float> getNewAudio();
 
-    // Get all audio captured in the current recording session
-    [[nodiscard]] std::vector<float> getFullRecording() const;
-
     // === VAD ===
-    [[nodiscard]] const VADState& getVADState() const noexcept;
+    [[nodiscard]] VADState getVADState() const noexcept;
     void setVADThreshold(float threshold);
     void setVADEnabled(bool enabled);
 
@@ -133,50 +110,38 @@ public:
     [[nodiscard]] static std::vector<AudioDevice> listInputDevices();
     void setInputDevice(int deviceIndex);
 
-signals:
-    // Emitted when VAD detects speech onset
-    void speechStarted();
-
-    // Emitted when VAD detects speech end (+ silence hold expired)
-    void speechEnded(int durationMs);
-
-    // Emitted periodically with current audio level (for VU meter)
-    void audioLevelChanged(float rmsEnergy);
-
-    // Emitted on errors
-    void captureError(const QString& error);
+    // === Callbacks ===
+    std::function<void()> onSpeechStarted;
+    std::function<void(int durationMs)> onSpeechEnded;
+    std::function<void(float rmsEnergy)> onAudioLevelChanged;
+    std::function<void(const std::string& error)> onCaptureError;
 
 private:
-    // PortAudio stream callback (static, real-time safe)
     static int paStreamCallback(
-        const void* inputBuffer,
-        void* outputBuffer,
-        unsigned long framesPerBuffer,
-        const void* timeInfo,
-        unsigned long statusFlags,
-        void* userData
+        const void* inputBuffer, void* outputBuffer,
+        unsigned long framesPerBuffer, const void* timeInfo,
+        unsigned long statusFlags, void* userData
     );
 
-    // Process a chunk of audio for VAD
     void processVAD(const float* samples, size_t count);
-
-    // Compute RMS energy of a buffer
-    [[nodiscard]] static float computeRMSEnergy(
-        const float* samples, size_t count) noexcept;
-
-    // Noise floor estimation (exponential moving average)
+    [[nodiscard]] static float computeRMSEnergy(const float* samples, size_t count) noexcept;
     void updateNoiseFloor(float energy) noexcept;
+
+    void notifyError(const std::string& err);
 
     // === State ===
     void*                       m_paStream  = nullptr;  // PaStream* (opaque)
     AudioRingBuffer             m_ringBuffer;
 
-    // Full recording accumulator (for final pass)
-    mutable QMutex              m_fullRecMutex;
-    std::vector<float>          m_fullRecording;
+    // VAD (Atomic primitives for cross-thread safety)
+    std::atomic<bool>           m_vadIsSpeechActive{false};
+    std::atomic<float>          m_vadCurrentEnergy{0.0f};
+    std::atomic<float>          m_vadPeakEnergy{0.0f};
+    std::atomic<int64_t>        m_vadSpeechStartMs{0};
+    std::atomic<int64_t>        m_vadSpeechDurationMs{0};
+    std::atomic<float>          m_vadNoiseFloor{0.001f};
+    std::atomic<float>          m_vadThreshold{VAD_ENERGY_THRESHOLD};
 
-    // VAD
-    VADState                    m_vadState;
     bool                        m_vadEnabled = true;
     int                         m_vadHoldCounter = 0;
 
@@ -185,7 +150,7 @@ private:
     std::atomic<bool>           m_recording{false};
 
     // Device selection
-    int                         m_deviceIndex = -1;  // -1 = system default
+    int                         m_deviceIndex = -1;  
 };
 
 } // namespace vision::voice

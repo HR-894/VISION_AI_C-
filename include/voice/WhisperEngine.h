@@ -1,78 +1,68 @@
 // =============================================================================
 // VISION AI - WhisperEngine.h
 // Non-blocking streaming transcription worker using whisper.cpp
-// Runs on a dedicated QThread, processes audio chunks via sliding window,
-// emits partial transcriptions in real-time
+// Runs on a dedicated std::thread, processes audio chunks via sliding window,
+// invokes partial transcriptions in real-time (No Qt)
 // =============================================================================
 #pragma once
 
-#include <QObject>
-#include <QThread>
-#include <QMutex>
-#include <QWaitCondition>
-
+#include <mutex>
+#include <thread>
 #include <string>
 #include <vector>
 #include <atomic>
 #include <memory>
 #include <functional>
 #include <chrono>
+#include <future>
 
-// Forward declaration for whisper.cpp opaque type
 struct whisper_context;
 
 namespace vision::voice {
 
-// Forward declaration
 class AudioCapture;
 
 // -------------------------------------------------------------------------
 // Transcription Result
 // -------------------------------------------------------------------------
 struct TranscriptionResult {
-    std::string text;               // The transcribed text
-    bool        isPartial = true;   // true = interim, false = final
-    float       confidence = 0.0f;  // Aggregate confidence [0.0 - 1.0]
-    int64_t     latencyMs  = 0;     // Time from audio chunk to result
-    int         audioChunkMs = 0;   // Duration of audio processed
+    std::string text;               
+    bool        isPartial = true;   
+    float       confidence = 0.0f;  
+    int64_t     latencyMs  = 0;     
+    int         audioChunkMs = 0;   
 };
 
 // -------------------------------------------------------------------------
 // Whisper Configuration
 // -------------------------------------------------------------------------
 struct WhisperConfig {
-    std::string modelPath;          // Path to .bin whisper model file
-    std::string language = "en";    // Language code or "auto"
-    bool        translate = false;  // Translate to English?
+    std::string modelPath;          
+    std::string language = "en";    
+    bool        translate = false;  
 
-    // Streaming parameters
-    int     chunkMs         = 1000;     // Process audio every N ms
-    int     slidingWindowMs = 2000;     // Sliding window size for partial decode
-    int     finalWindowMs   = 0;        // 0 = use full recording for final pass
+    int     chunkMs         = 1000;     
+    int     slidingWindowMs = 2000;     
+    int     finalWindowMs   = 0;        
 
-    // Inference parameters (tuned for speed vs accuracy tradeoff)
-    int     beamSize        = 2;        // Beam search width (2 = fast, 5 = accurate)
-    int     bestOf          = 1;        // Best-of-N sampling
-    int     threads         = 4;        // CPU threads for inference
-    bool    useGPU          = false;    // Use GPU acceleration if available
+    int     beamSize        = 2;        
+    int     bestOf          = 1;        
+    int     threads         = 4;        
+    bool    useGPU          = false;    
 
-    // Speed optimization: reduce audio processing overhead
-    bool    noTimestamps    = true;     // Don't compute word-level timestamps
-    bool    singleSegment   = true;     // Force single segment output
-    float   noSpeechThreshold = 0.6f;   // Suppress non-speech segments
+    bool    noTimestamps    = true;     
+    bool    singleSegment   = true;     
+    float   noSpeechThreshold = 0.6f;   
 };
 
 // -------------------------------------------------------------------------
 // WhisperEngine - Streaming Transcription Worker
 // -------------------------------------------------------------------------
-class WhisperEngine : public QObject {
-    Q_OBJECT
-
+class WhisperEngine {
 public:
-    explicit WhisperEngine(QObject* parent = nullptr);
-    ~WhisperEngine() override;
+    explicit WhisperEngine();
+    ~WhisperEngine();
 
-    // Non-copyable
     WhisperEngine(const WhisperEngine&) = delete;
     WhisperEngine& operator=(const WhisperEngine&) = delete;
 
@@ -82,22 +72,16 @@ public:
     [[nodiscard]] bool isModelLoaded() const noexcept;
 
     // === Streaming Control ===
-    // Start the background worker thread that polls AudioCapture
     void startStreaming(AudioCapture* audioSource);
-
-    // Stop the streaming worker
     void stopStreaming();
-
     [[nodiscard]] bool isStreaming() const noexcept;
 
     // === One-Shot Transcription ===
-    // Transcribe a buffer of PCM float samples (blocking)
     [[nodiscard]] TranscriptionResult transcribe(
         const std::vector<float>& audioData,
         bool highAccuracy = false
     );
 
-    // Transcribe asynchronously (non-blocking, emits signal when done)
     void transcribeAsync(
         const std::vector<float>& audioData,
         bool highAccuracy = false
@@ -107,31 +91,26 @@ public:
     void setConfig(const WhisperConfig& config);
     [[nodiscard]] const WhisperConfig& getConfig() const noexcept;
 
-    // === Abort ===
     void abort() noexcept;
 
-signals:
-    // Emitted for each partial (interim) transcription during streaming
-    void partialTranscription(const QString& text);
-
-    // Emitted when final transcription is available
-    void finalTranscription(const QString& text, float confidence);
-
-    // Emitted on each transcription result (partial or final)
-    void transcriptionResult(const TranscriptionResult& result);
-
-    // Emitted on errors
-    void engineError(const QString& error);
-
-    // Model lifecycle
-    void modelLoaded(const QString& modelPath);
-    void modelUnloaded();
+    // === Callbacks ===
+    std::function<void(const std::string&)> onPartialTranscription;
+    std::function<void(const std::string&, float confidence)> onFinalTranscription;
+    std::function<void(const TranscriptionResult&)> onTranscriptionResult;
+    std::function<void(const std::string& error)> onEngineError;
+    std::function<void(const std::string& modelPath)> onModelLoaded;
+    std::function<void()> onModelUnloaded;
 
 private:
+    void streamingWorkerLoop(AudioCapture* audioSource);
+    void notifyError(const std::string& error);
+
+    // === Async Task ===
+    std::future<void>                 m_asyncTask;
+
     // === Worker Thread ===
-    class StreamingWorker;
-    std::unique_ptr<QThread>          m_workerThread;
-    StreamingWorker*                  m_worker = nullptr;
+    std::unique_ptr<std::thread>      m_workerThread;
+    std::atomic<bool>                 m_workerRunning{false};
 
     // === Whisper Context ===
     whisper_context*                  m_ctx = nullptr;
@@ -142,32 +121,7 @@ private:
     std::atomic<bool>                 m_streaming{false};
     std::atomic<bool>                 m_abortRequested{false};
 
-    mutable QMutex                    m_ctxMutex;  // Guards m_ctx access
-};
-
-// -------------------------------------------------------------------------
-// StreamingWorker - Internal worker that runs on a QThread
-// -------------------------------------------------------------------------
-class WhisperEngine::StreamingWorker : public QObject {
-    Q_OBJECT
-
-public:
-    StreamingWorker(WhisperEngine* engine, AudioCapture* audioSource);
-
-    void stop() noexcept;
-
-public slots:
-    void process();
-
-signals:
-    void partialResult(const QString& text);
-    void finished();
-
-private:
-    WhisperEngine*  m_engine;
-    AudioCapture*   m_audioSource;
-    std::atomic<bool> m_running{true};
-    std::string     m_lastPartialText;
+    mutable std::mutex                m_ctxMutex;  
 };
 
 } // namespace vision::voice

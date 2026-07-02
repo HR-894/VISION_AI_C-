@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package vision_daemon;
+
+// ---------------------------------------------------------
+// THE DAEMON INTERFACE
+// ---------------------------------------------------------
+service SensoryMotorEngine {
+  // 1. Health Check
+  rpc CheckHealth(Empty) returns (DaemonStatus);
+
+  // 2. Motor System (Brain -> Daemon)
+  rpc ExecuteMouseKeyboard(ActionRequest) returns (ActionResult);
+  rpc ManageOSWindow(WindowRequest) returns (ActionResult);
+
+  // 3. Sensory System (Daemon -> Brain)
+  // Server-side streaming: Daemon continuously pushes screen diffs or audio text
+  rpc StreamVisuals(VisualRequest) returns (stream ScreenFrame);
+  rpc StreamMicrophone(Empty) returns (stream AudioTranscript);
+}
+
+// --- Messages ---
+message Empty {}
+
+message DaemonStatus {
+  bool is_alive = 1;
+  string active_window_title = 2;
+  int32 memory_usage_mb = 3;
+}
+
+message ActionRequest {
+  enum ActionType {
+    CLICK_LEFT = 0;
+    CLICK_RIGHT = 1;
+    SCROLL = 2;
+    TYPE_TEXT = 3;
+    KEY_COMBO = 4;
+  }
+  ActionType action_type = 1;
+  int32 x = 2;              // -1 if irrelevant
+  int32 y = 3;              // -1 if irrelevant
+  string text_payload = 4;  // For typing or key combos
+}
+
+message ActionResult {
+  bool success = 1;
+  string error_message = 2;
+}
+
+message WindowRequest {
+  enum WindowAction {
+    FOCUS = 0;
+    MINIMIZE = 1;
+    MAXIMIZE = 2;
+    CLOSE = 3;
+  }
+  WindowAction action = 1;
+  string window_title_substring = 2;
+}
+
+message VisualRequest {
+  int32 fps_cap = 1;           // Don't fry the pipeline, e.g., 2 FPS
+  bool only_on_change = 2;     // Send frame ONLY if pixels change (ScreenDiff)
+  int32 compression_quality = 3; // JPEG quality (1-100)
+}
+
+message ScreenFrame {
+  int64 timestamp = 1;
+  string active_window = 2;
+  bytes jpeg_image_data = 3;   // Compressed base64/binary payload
+}
+
+message AudioTranscript {
+  int64 timestamp = 1;
+  bool is_final = 2;           // True if sentence is complete, False if still listening
+  string text = 3;             // Transcribed Whisper.cpp text
+}
