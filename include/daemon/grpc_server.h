@@ -8,12 +8,25 @@
 #include "vision_daemon.grpc.pb.h"
 #include "vision_daemon.pb.h"
 
+// Forward declarations
+namespace vision {
+    namespace voice { class VoiceManager; }
+    class UIAutomation;
+    class WindowManager;
+    class ScreenObserver;
+}
+
 namespace vision {
 namespace daemon {
 
 class SensoryMotorEngineImpl final : public vision_daemon::SensoryMotorEngine::Service {
 public:
-    SensoryMotorEngineImpl();
+    SensoryMotorEngineImpl(
+        std::shared_ptr<vision::voice::VoiceManager> voice_mgr,
+        std::shared_ptr<vision::UIAutomation> ui_auto,
+        std::shared_ptr<vision::WindowManager> win_mgr,
+        std::shared_ptr<vision::ScreenObserver> screen_obs
+    );
     ~SensoryMotorEngineImpl() override;
 
     grpc::Status CheckHealth(grpc::ServerContext* context, const vision_daemon::Empty* request, vision_daemon::DaemonStatus* reply) override;
@@ -28,11 +41,23 @@ public:
 
 private:
     std::atomic<bool> m_is_running;
+
+    // Subsystem Dependencies
+    std::shared_ptr<vision::voice::VoiceManager> m_voice_mgr;
+    std::shared_ptr<vision::UIAutomation>        m_ui_auto;
+    std::shared_ptr<vision::WindowManager>       m_win_mgr;
+    std::shared_ptr<vision::ScreenObserver>      m_screen_obs;
 };
 
 class DaemonServer {
 public:
-    DaemonServer(const std::string& address);
+    DaemonServer(
+        const std::string& address,
+        std::shared_ptr<vision::voice::VoiceManager> voice_mgr,
+        std::shared_ptr<vision::UIAutomation> ui_auto,
+        std::shared_ptr<vision::WindowManager> win_mgr,
+        std::shared_ptr<vision::ScreenObserver> screen_obs
+    );
     ~DaemonServer();
 
     void Run();

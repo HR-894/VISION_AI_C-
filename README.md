@@ -1,124 +1,76 @@
-<p align="center">
+<div align="center">
   <img src="assets/icon.png" alt="VISION AI Daemon Logo" width="128" />
-</p>
-
-<h1 align="center">VISION AI Daemon</h1>
-
-<p align="center">
-  <strong>The Sensory and Motor Layer for Next-Gen AI — A Headless C++ gRPC Daemon</strong>
-</p>
-
-<p align="center">
-  <a href="#-download--install"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows"></a>
-  <a href="#-build-from-source"><img src="https://img.shields.io/badge/C%2B%2B-20-00599C?style=for-the-badge&logo=cplusplus&logoColor=white" alt="C++20"></a>
-  <a href="#-architecture--tech-stack"><img src="https://img.shields.io/badge/gRPC-Framework-244c5a?style=for-the-badge&logo=grpc&logoColor=white" alt="gRPC"></a>
-  <a href="#-core-features"><img src="https://img.shields.io/badge/whisper.cpp-Audio-FF6F00?style=for-the-badge" alt="whisper.cpp"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-A31F34?style=for-the-badge" alt="License"></a>
-</p>
+  <h1>VISION AI Daemon (The Body)</h1>
+  <p><strong>The Sensory and Motor Layer for Next-Gen AI — A Headless C++ gRPC Daemon</strong></p>
+</div>
 
 ---
 
 ## 🎬 What is the VISION AI Daemon?
 
-The **VISION AI Daemon** is a native, highly optimized **Windows C++ daemon** designed to act as the raw hardware interaction layer for external AI agents. It exposes the operating system's sensory (audio, screen) and motor (keyboard, mouse, windows) functions over a **strict gRPC protocol**.
+The **VISION AI Daemon** is the physical "Body" of the AI system. It is a highly optimized, headless **Windows C++ daemon** designed to act as the raw hardware interaction layer. It has **no intelligence of its own**. It exposes the operating system's sensory (audio, screen) and motor (keyboard, mouse, windows) functions over a **blazing fast gRPC protocol**.
 
-By design, this daemon contains **zero cognitive logic, zero LLM integration, and zero UI**. It exists purely to convert raw OS signals into structured data, and structured commands into raw OS actions. Your external Python/Node.js/Go AI orchestrators can connect to this daemon to take control of the PC.
-
----
-
-## ✨ Core Capabilities
-
-### 🎤 Voice Input Pipeline (`AudioCapture` + `WhisperEngine`)
-A lock-free, highly concurrent audio pipeline for real-time speech-to-text.
-- **Lock-Free Audio Ring Buffer:** Single-Producer/Single-Consumer (SPSC) queue captures mic input without blocking the PortAudio real-time hardware thread.
-- **Atomic VAD (Voice Activity Detection):** Adaptive noise floor tracking built on atomics, ensuring thread-safe gating of audio streams.
-- **Asynchronous whisper.cpp Integration:** Emits streaming partial and final transcriptions without freezing the worker threads.
-
-### 🖥️ OS-Level Automation (`ui_automation` + `window_manager`)
-- **UI Automation:** Microsoft UIA (COM) integration for reading accessibility trees, clicking buttons, and semantic form interactions.
-- **Screen Observer:** DXGI Desktop Duplication API + perceptual hashing (pHash) to detect screen deltas and visual state.
-- **Smart Input Injection:** Win32 `SendInput` with caret tracking to inject keystrokes reliably into target processes.
-- **Window Control:** Full Win32 API access to manipulate, focus, and query OS windows.
-
-### 🩺 System Diagnostics (`doctor`)
-Basic system health monitoring exposed via RPC:
-- RAM usage & capacity
-- CPU logical core count
-- Filesystem available space
+By design, this daemon contains zero cognitive logic and zero UI. It exists purely to stream your microphone and screen to the "Brain" (Myraa AI Assistant), and perfectly execute the mouse and keyboard clicks that the Brain commands.
 
 ---
 
-## 🏗️ Architecture
+## 🧠 The Architecture (Body vs Brain)
 
-```
-VISION AI Daemon (Headless gRPC)
-├── Language          C++20 (MSVC /std:c++20)
-├── Communication     gRPC + Protobuf
-├── Speech-to-Text    whisper.cpp (ggml models)
-├── Audio Capture     PortAudio 19
-├── Audio Pipeline    Lock-Free SPSC Ring Buffer + VAD
-├── UI Automation     Microsoft UIA (COM)
-├── Screen Capture    DXGI Desktop Duplication API
-├── Input Simulation  Win32 SendInput + GUI Thread Caret
-├── Logging           spdlog (rotating file + console)
-└── Build System      CMake 3.20+
-```
+This project works in tandem with the **Myraa AI Assistant** (The Brain). 
 
-### The gRPC Contract (`vision_daemon.proto`)
-The system communicates strictly through `vision_daemon.proto`. Supported services include:
-- `HealthCheck()`: Returns RAM/CPU status
-- `StreamVoice()`: Bidirectional streaming for real-time transcription
-- `ExecuteOSCommand()`: Injection for Win32/UIA actions
+1. **VISION AI C++ (The Body):** Runs locally on your Windows machine. Uses almost no RAM. It captures your screen and microphone, and clicks your mouse.
+2. **Myraa AI Assistant (The Brain):** A web-based UI that uses the Gemini Live API for intelligence. It connects to the Body via a Python gRPC Bridge.
+
+**Why decouple them? (Low RAM Optimization)**
+Running a local AI model (like LLaMA) takes 4GB - 8GB of RAM. By splitting the system, we offload the heavy thinking to the Cloud (Gemini) via Myraa. This means VISION AI C++ can run on extremely low-spec, low-RAM devices without crashing!
 
 ---
 
-## 🛠️ Build from Source
+## ✨ Core Capabilities (Optimized for Speed)
 
-### Prerequisites
+- **Sensory Audio (Whisper.cpp):** Micro-sliced, chunked audio streaming over gRPC for zero-latency transcription.
+- **Sensory Vision (DXGI + pHash):** Grabs screen frames only when pixels physically change (perceptual hashing) to save massive bandwidth.
+- **Motor Control (Win32):** Injects flawless keystrokes and mouse clicks directly into the OS.
 
-| Dependency | Version | Notes |
-|---|---|---|
-| **CMake** | ≥ 3.20 | Build system |
-| **MSVC** | VS 2022+ | C++20 compiler |
-| **gRPC & Protobuf** | 1.5x+ | For RPC generation |
-| **OpenCV** | 4.x | *Optional* — OCR & template matching |
-| **PortAudio** | 19.x | Microphone capture |
+---
 
-### Clone & Build
+## 🚀 How to Run the Complete System
 
+To bring the AI to life, you must run both the Body and the Brain simultaneously.
+
+### Step 1: Build & Run VISION AI (The Body)
 ```bash
-# Clone with submodules (whisper.cpp, spdlog)
-git clone --recursive https://github.com/HR-894/VISION_AI_C-.git
-cd VISION_AI_C-
-
-# Configure (Generates gRPC C++ bindings automatically)
-mkdir build
-cd build
+# 1. Generate the C++ gRPC bindings and configure the project
+mkdir build && cd build
 cmake -G "Visual Studio 17 2022" -A x64 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..
 
-# Build
+# 2. Compile the highly-optimized Release build
 cmake --build . --config Release --parallel
 
-# Run Daemon
+# 3. Launch the headless daemon (Listens on 127.0.0.1:53912)
 ./bin/Release/vision_daemon.exe
 ```
 
+### Step 2: Run Myraa AI Assistant (The Brain)
+Follow the instructions in the `myraa-ai-assistant` repository to launch the Python Synapse Bridge and the React Frontend.
+
 ---
 
-## 🤝 Contributing
+## 🔮 The Future: 64GB RAM & Local LLMs
 
-Contributions welcome! Bug fixes, features, docs — all appreciated.
+Right now, VISION AI C++ is perfectly optimized for low-RAM devices by acting as a "Dumb Pipe" to the cloud-powered Myraa Brain. 
 
-1. **Fork** the repository
-2. **Create** a feature branch: `git checkout -b feat/amazing-feature`
-3. **Commit** your changes: `git commit -m "feat: add amazing feature"`
-4. **Push** to the branch: `git push origin feat/amazing-feature`
-5. **Open** a Pull Request
+**What if I upgrade to 64GB of RAM in the future?**
+If you acquire a massive supercomputer or high-VRAM GPU, you can unleash local intelligence! 
+Because of this decoupled architecture, you will **not** need to rewrite the C++ daemon. You can simply:
+1. Stop using the cloud Gemini API in Myraa.
+2. Boot up a massive local open-source LLM (like Llama 3 70B).
+3. Point the Python Synapse Bridge directly to your local LLM instead of the internet.
+4. The C++ Daemon will seamlessly accept commands from your local AI just as it did from the cloud! 
 
-**Code style:** C++20, `snake_case` for files, `PascalCase` for classes, compile clean with `/W4`. No UI or Qt dependencies allowed.
+Alternatively, because the C++ project still contains the `models/` directory, a future update could re-integrate `llama.cpp` directly into the C++ daemon to run everything in a single offline executable if your hardware supports it.
 
 ---
 
 ## 📜 License
-
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **MIT License**.
